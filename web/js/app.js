@@ -2,7 +2,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const f = window.fmt;
-  const STORAGE_KEY = "autotechnical.chart";
+  const STORAGE_KEY = "autotechnical.chart.v2";
 
   const state = {
     stocks: [],
@@ -17,7 +17,15 @@
   function loadChartSettings() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (saved && Array.isArray(saved.overlays) && Array.isArray(saved.panes)) return saved;
+      if (saved && Array.isArray(saved.overlays) && Array.isArray(saved.panes)) {
+        const ids = (items) => new Set(items.map((i) => i.id));
+        const overlayIds = ids(StockChart.OVERLAYS);
+        const paneIds = ids(StockChart.PANES);
+        return {
+          overlays: saved.overlays.filter((id) => overlayIds.has(id)),
+          panes: saved.panes.filter((id) => paneIds.has(id)),
+        };
+      }
     } catch (_) { /* 保存値がなければ既定値 */ }
     return { overlays: [...StockChart.DEFAULTS.overlays], panes: [...StockChart.DEFAULTS.panes] };
   }
@@ -225,10 +233,9 @@
   const STATUS = { bull: "強気", bear: "弱気", neutral: "中立", na: "—" };
 
   function cardValue(c, currency) {
-    if (c.value === null) return "—";
-    if (["sma", "ichimoku", "atr_14"].includes(c.key)) return f.price(c.value, currency);
-    if (c.key === "deviation_25") return f.signed(c.value, 2, "%");
-    if (c.key === "bb") return f.num(c.value, 2);
+    if (c.value === null) return "";
+    if (["sma", "ema", "ichimoku", "parabolic", "bb", "stddev", "momentum"].includes(c.key)) return f.price(c.value, currency);
+    if (c.key.startsWith("deviation_")) return f.signed(c.value, 2, "%");
     if (c.key === "macd") return f.num(c.value, 2);
     return f.num(c.value, 1);
   }
@@ -305,7 +312,7 @@
       };
     };
     build(StockChart.OVERLAYS, "overlays", $("overlay-chips"));
-    build(StockChart.PANES.map((p) => ({ ...p, label: p.label.replace(/\s*\(.*\)$/, "") })), "panes", $("pane-chips"));
+    build(StockChart.PANES, "panes", $("pane-chips"));
   }
 
   // ---------- 初期化 ----------

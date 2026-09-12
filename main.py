@@ -41,8 +41,12 @@ def main() -> None:
     setup_logging(args.debug)
 
     db = Database(DB_PATH)
-    db.init_schema()
-    api = Api(StockService(db, YahooFetcher(), CSV_DIR))
+    schema_changed = db.init_schema()
+    service = StockService(db, YahooFetcher(), CSV_DIR)
+    if schema_changed:
+        logging.getLogger(__name__).info("indicator columns changed, recomputing all stocks")
+        service.rebuild_all()
+    api = Api(service)
 
     webview.create_window(
         f"Autotechnical {__version__}",

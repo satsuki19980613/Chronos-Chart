@@ -45,11 +45,20 @@ class Database:
         with self._write_lock, self.connect() as conn:
             yield conn
 
-    def init_schema(self) -> None:
+    def init_schema(self) -> bool:
+        """テーブルを作成する。
+
+        指標の構成が変わっていた場合は indicators テーブルを作り直し True を返す
+        （指標は株価から再計算できるため、呼び出し側で再計算する）。
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         indicator_cols = ",\n".join(f"    {key} REAL" for key in INDICATOR_KEYS)
         with self.write() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
+            existing = [row["name"] for row in conn.execute("PRAGMA table_info(indicators)")]
+            rebuilt = bool(existing) and existing != ["symbol", "date", *INDICATOR_KEYS]
+            if rebuilt:
+                conn.execute("DROP TABLE indicators")
             conn.executescript(
                 f"""
                 CREATE TABLE IF NOT EXISTS stocks (
@@ -79,11 +88,7 @@ class Database:
                 );
                 """
             )
-            # 指標を追加したときは既存DBに列を足す
-            existing = {row["name"] for row in conn.execute("PRAGMA table_info(indicators)")}
-            for key in INDICATOR_KEYS:
-                if key not in existing:
-                    conn.execute(f"ALTER TABLE indicators ADD COLUMN {key} REAL")
+        return rebuilt
 
     # ---------- stocks ----------
     def upsert_stock(self, symbol: str, code: str, name: str, exchange: str | None, currency: str | None) -> None:

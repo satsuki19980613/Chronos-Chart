@@ -7,6 +7,7 @@ from conftest import make_prices
 
 from app.database import Database
 from app.fetcher import FetchError, SearchResult, code_from_symbol, normalize_query
+from app.indicators import INDICATOR_KEYS
 from app.service import StockService
 
 
@@ -54,7 +55,8 @@ def test_register_saves_prices_indicators_and_csv(env):
     prices_csv = pd.read_csv(tmp_path / "csv" / "7203.T_prices.csv", encoding="utf-8-sig")
     assert list(prices_csv.columns) == ["日付", "始値", "高値", "安値", "終値", "出来高"]
     indicators_csv = pd.read_csv(tmp_path / "csv" / "7203.T_indicators.csv", encoding="utf-8-sig")
-    assert len(indicators_csv) == 200 and "RSI(14)" in indicators_csv.columns
+    assert len(indicators_csv) == 200 and "RSI 中期(14)" in indicators_csv.columns
+    assert len(indicators_csv.columns) == len(INDICATOR_KEYS) + 1
 
     assert service.search("7203")[0]["registered"] is True
 
@@ -109,6 +111,19 @@ def test_delete_removes_db_rows_and_csv(env):
     assert service.db.get_prices("7203.T").empty
     assert service.db.get_indicators("7203.T").empty
     assert not (tmp_path / "csv" / "7203.T_prices.csv").exists()
+
+
+def test_changed_indicator_columns_trigger_rebuild(env):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    with service.db.write() as conn:  # 旧バージョンの指標テーブルを再現
+        conn.execute("DROP TABLE indicators")
+        conn.execute("CREATE TABLE indicators (symbol TEXT, date TEXT, sma_5 REAL, PRIMARY KEY (symbol, date))")
+
+    assert service.db.init_schema() is True
+    service.rebuild_all()
+    assert len(service.db.get_indicators("7203.T")) == 200
+    assert service.db.init_schema() is False
 
 
 def test_query_normalization():

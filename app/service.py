@@ -81,6 +81,12 @@ class StockService:
                 errors.append(f"{stock['symbol']}: {exc}")
         return {"updated": len(results), "errors": errors, "warnings": [w for r in results for w in r["warnings"]]}
 
+    def rebuild_all(self) -> None:
+        """保存済みの株価から全銘柄の指標と CSV を作り直す（指標構成の変更時など）。"""
+        for stock in self.db.list_stocks():
+            with self._symbol_locks[stock["symbol"]]:
+                self._rebuild(stock["symbol"])
+
     def delete(self, symbol: str) -> None:
         with self._symbol_locks[symbol]:
             self.db.delete_stock(symbol)
@@ -128,6 +134,8 @@ class StockService:
                 "close": _clean(prices["close"]),
                 "volume": _clean(prices["volume"]),
                 "indicators": {key: _clean(indicators[key]) for key in ind.INDICATOR_KEYS},
+                "labels": dict(ind.INDICATOR_COLUMNS),
+                "params": ind.PARAMS,
                 "future_cloud": _future_cloud(prices),
                 "signals": signals,
             },

@@ -56,8 +56,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
     db = Database(DB_PATH)
-    db.init_schema()
-    api = Api(StockService(db, YahooFetcher(), CSV_DIR))
+    service = StockService(db, YahooFetcher(), CSV_DIR)
+    if db.init_schema():
+        service.rebuild_all()
+    api = Api(service)
 
     handler = partial(make_handler(api), directory=str(WEB_DIR))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
