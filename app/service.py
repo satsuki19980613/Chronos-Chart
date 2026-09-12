@@ -10,8 +10,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from . import ai_export
 from . import indicators as ind
-from .config import INITIAL_PERIOD
+from .config import INITIAL_PERIOD, OUTPUT_DIR
 from .csv_export import csv_paths, export_csv, remove_csv
 from .database import Database
 from .fetcher import YahooFetcher, code_from_symbol
@@ -20,10 +21,11 @@ log = logging.getLogger(__name__)
 
 
 class StockService:
-    def __init__(self, db: Database, fetcher: YahooFetcher, csv_dir: Path):
+    def __init__(self, db: Database, fetcher: YahooFetcher, csv_dir: Path, output_dir: Path = OUTPUT_DIR):
         self.db = db
         self.fetcher = fetcher
         self.csv_dir = csv_dir
+        self.output_dir = output_dir
         # 同じ銘柄の登録/更新が同時に走らないようにする
         self._symbol_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
@@ -81,11 +83,21 @@ class StockService:
                 errors.append(f"{stock['symbol']}: {exc}")
         return {"updated": len(results), "errors": errors, "warnings": [w for r in results for w in r["warnings"]]}
 
-    def rebuild_all(self) -> None:
-        """保存済みの株価から全銘柄の指標と CSV を作り直す（指標構成の変更時など）。"""
+    def rebuild_all(self, only_missing_csv: bool = False) -> int:
+        """保存済みの株価から指標と CSV を作り直す。
+
+        指標構成の変更時は全銘柄、only_missing_csv=True なら CSV が無い銘柄だけ
+        （CSV の形式・ファイル名を変えたバージョンへの移行用）。作り直した銘柄数を返す。
+        """
+        count = 0
         for stock in self.db.list_stocks():
-            with self._symbol_locks[stock["symbol"]]:
-                self._rebuild(stock["symbol"])
+            symbol = stock["symbol"]
+            if only_missing_csv and all(p.exists() for p in csv_paths(self.csv_dir, symbol).values()):
+                continue
+            with self._symbol_locks[symbol]:
+                self._rebuild(symbol)
+            count += 1
+        return count
 
     def delete(self, symbol: str) -> None:
         with self._symbol_locks[symbol]:
@@ -100,9 +112,17 @@ class StockService:
         prices = self.db.get_prices(symbol)
         indicators = ind.compute_indicators(prices)
         self.db.replace_indicators(symbol, indicators)
-        warnings = export_csv(self.csv_dir, symbol, prices, indicators)
+        stock = self.db.get_stock(symbol) or {}
+        warnings = export_csv(self.csv_dir, symbol, prices, indicators, stock.get("currency"))
         self.db.touch_stock(symbol)
         return warnings
+
+    # ---------- 出力（AI 向け） ----------
+    def export(self, symbols: list[str], fmt: str, days: int | None) -> dict:
+        return ai_export.export(self.db, self.output_dir, symbols, fmt, days)
+
+    def list_exports(self) -> list[dict]:
+        return ai_export.list_exports(self.output_dir)
 
     # ---------- ダッシュボード ----------
     def dashboard(self, symbol: str) -> dict:

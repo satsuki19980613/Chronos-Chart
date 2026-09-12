@@ -14,5 +14,8 @@ DB_PATH = DATA_DIR / "autotechnical.db"
 CSV_DIR = DATA_DIR / "csv"
 LOG_DIR = DATA_DIR / "logs"
 
+# 出力タブ（AI 向けファイル）の保存先。環境変数 AUTOTECHNICAL_OUTPUT_DIR で変更できる
+OUTPUT_DIR = Path(os.environ.get("AUTOTECHNICAL_OUTPUT_DIR", BASE_DIR / "output"))
+
 # 初回登録時に取得する期間（yfinance の period 指定）
 INITIAL_PERIOD = "1y"

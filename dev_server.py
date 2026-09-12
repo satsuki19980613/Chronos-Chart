@@ -57,8 +57,7 @@ def main() -> None:
 
     db = Database(DB_PATH)
     service = StockService(db, YahooFetcher(), CSV_DIR)
-    if db.init_schema():
-        service.rebuild_all()
+    service.rebuild_all(only_missing_csv=not db.init_schema())
     api = Api(service)
 
     handler = partial(make_handler(api), directory=str(WEB_DIR))

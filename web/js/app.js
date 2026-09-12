@@ -11,6 +11,8 @@
     chart: null,
     range: "all",
     chartSettings: loadChartSettings(),
+    exportSelected: new Set(),
+    exportDays: "60",
   };
 
   // ---------- 共通 ----------
@@ -67,6 +69,7 @@
     });
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${name}`));
     if (name === "dashboard") openDashboard(state.currentSymbol);
+    if (name === "export") loadExportFiles();
   }
 
   // ---------- 登録画面 ----------
@@ -118,6 +121,7 @@
     }
     renderStockList();
     renderStockSelect();
+    renderExportStocks();
   }
 
   function renderStockList() {
@@ -315,6 +319,80 @@
     build(StockChart.PANES, "panes", $("pane-chips"));
   }
 
+  // ---------- 出力画面 ----------
+  function renderExportStocks() {
+    const symbols = new Set(state.stocks.map((s) => s.symbol));
+    state.exportSelected = new Set([...state.exportSelected].filter((s) => symbols.has(s)));
+
+    $("export-empty").hidden = state.stocks.length > 0;
+    $("export-stocks").innerHTML = state.stocks.map((s) => {
+      const checked = state.exportSelected.has(s.symbol);
+      return `
+        <tr data-symbol="${f.escape(s.symbol)}" class="${checked ? "is-selected" : ""}">
+          <td><input type="checkbox" ${checked ? "checked" : ""} aria-label="${f.escape(s.name)}を選択"></td>
+          <td class="symbol">${f.escape(s.code)}</td>
+          <td>${f.escape(s.name)} <span class="muted">${f.escape(s.symbol)}</span></td>
+          <td>${f.escape(s.exchange || "—")}</td>
+          <td>${f.date(s.first_date)} 〜 ${f.date(s.last_date)}</td>
+          <td class="num">${f.num(s.row_count)}</td>
+        </tr>`;
+    }).join("");
+    updateExportControls();
+  }
+
+  function updateExportControls() {
+    const n = state.exportSelected.size;
+    $("export-selected").textContent = n;
+    $("export-run").disabled = n === 0;
+    $("export-run").textContent = n ? `${n}銘柄を出力する` : "出力する";
+    const all = $("export-check-all");
+    all.checked = n > 0 && n === state.stocks.length;
+    all.indeterminate = n > 0 && n < state.stocks.length;
+    all.disabled = state.stocks.length === 0;
+  }
+
+  function toggleExportRow(e) {
+    const row = e.target.closest("tr[data-symbol]");
+    if (!row) return;
+    const symbol = row.dataset.symbol;
+    const selected = !state.exportSelected.has(symbol);
+    if (selected) state.exportSelected.add(symbol); else state.exportSelected.delete(symbol);
+    row.classList.toggle("is-selected", selected);
+    row.querySelector("input").checked = selected;
+    updateExportControls();
+  }
+
+  async function loadExportFiles() {
+    let files;
+    try {
+      files = await api.call("list_exports");
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    $("export-files-empty").hidden = files.length > 0;
+    $("export-files").innerHTML = files.map((file) => `
+      <tr>
+        <td class="file-name">${f.escape(file.name)}</td>
+        <td><span class="tag">${file.format === "csv" ? "CSV" : "Markdown"}</span></td>
+        <td class="num">${f.num(file.size / 1024, 1)} KB</td>
+        <td class="muted">${f.escape(file.modified)}</td>
+      </tr>`).join("");
+  }
+
+  async function runExport() {
+    // 表示順（コード順）で出力する
+    const symbols = state.stocks.map((s) => s.symbol).filter((s) => state.exportSelected.has(s));
+    if (!symbols.length) return;
+    const fmt = document.querySelector('input[name="export-format"]:checked').value;
+    const days = state.exportDays ? Number(state.exportDays) : null;
+    const res = await withBusy("出力しています…", () => api.call("export", symbols, fmt, days));
+    if (!res) return;
+    toast(`${res.name} を出力しました（${res.symbols.length}銘柄・${f.num(res.rows)}行）`, "info", 6000);
+    $("export-dir").textContent = `出力先: ${res.path}`;
+    await loadExportFiles();
+  }
+
   // ---------- 初期化 ----------
   function bind() {
     document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
@@ -338,13 +416,28 @@
       document.querySelectorAll("#range-buttons button").forEach((b) => b.classList.toggle("is-active", b === btn));
       state.chart?.setRange(state.range);
     });
-    $("open-csv").addEventListener("click", async () => {
+    const openFolder = (method) => async () => {
       try {
-        await api.call("open_csv_folder");
+        await api.call(method);
       } catch (err) {
         toast(err.message, "error");
       }
+    };
+    $("open-csv").addEventListener("click", openFolder("open_csv_folder"));
+    $("open-output").addEventListener("click", openFolder("open_output_folder"));
+
+    $("export-stocks").addEventListener("click", toggleExportRow);
+    $("export-check-all").addEventListener("change", (e) => {
+      state.exportSelected = e.target.checked ? new Set(state.stocks.map((s) => s.symbol)) : new Set();
+      renderExportStocks();
     });
+    $("export-days").addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      state.exportDays = btn.dataset.days;
+      document.querySelectorAll("#export-days button").forEach((b) => b.classList.toggle("is-active", b === btn));
+    });
+    $("export-run").addEventListener("click", runExport);
   }
 
   async function init() {

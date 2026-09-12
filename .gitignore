@@ -17,3 +17,6 @@ dist/
 .claude/
 .DS_Store
 Thumbs.db
+
+# 出力タブで作成したファイル
+output/

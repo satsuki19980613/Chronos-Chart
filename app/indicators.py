@@ -73,6 +73,85 @@ INDICATOR_COLUMNS: list[tuple[str, str]] = [
 INDICATOR_KEYS = [key for key, _ in INDICATOR_COLUMNS]
 
 
+def value_kind(key: str) -> str:
+    """表示時の丸め方の分類。price: 株価と同じ単位 / pct: パーセント等の指数 / macd: MACD 系。"""
+    if key.startswith(("sma_", "ema_", "bb_", "ichimoku_", "gmma_")) or key in ("parabolic", "stddev", "momentum", "momentum_signal"):
+        return "price"
+    if key.startswith("macd"):
+        return "macd"
+    return "pct"
+
+
+def ai_column_names() -> dict[str, str]:
+    """AI 向け出力用の列名（英語 snake_case、期間を含めて自己説明的にする）。"""
+    p = PARAMS
+    ich = p["ichimoku"]
+    names = {
+        "sma_short": f"sma_{p['sma']['short']}",
+        "sma_mid": f"sma_{p['sma']['mid']}",
+        "sma_long": f"sma_{p['sma']['long']}",
+        "bb_upper": f"bb_{p['bb']['period']}_upper_{p['bb']['sigma']}sd",
+        "bb_mid": f"bb_{p['bb']['period']}_middle",
+        "bb_lower": f"bb_{p['bb']['period']}_lower_{p['bb']['sigma']}sd",
+        "macd": f"macd_{p['macd']['fast']}_{p['macd']['slow']}",
+        "macd_signal": f"macd_signal_{p['macd']['signal']}",
+        "rsi": f"rsi_{p['rsi']}",
+        "ichimoku_kijun": f"ichimoku_kijun_{ich['kijun']}",
+        "ichimoku_tenkan": f"ichimoku_tenkan_{ich['tenkan']}",
+        "ichimoku_senkou1": "ichimoku_senkou_span_a",
+        "ichimoku_senkou2": f"ichimoku_senkou_span_b_{ich['senkou2']}",
+        "ichimoku_chikou": "ichimoku_chikou_span",
+        "ema_short": f"ema_{p['ema']['short']}",
+        "ema_mid": f"ema_{p['ema']['mid']}",
+        "ema_long": f"ema_{p['ema']['long']}",
+        "rci_short": f"rci_{p['rci']['short']}",
+        "rci_long": f"rci_{p['rci']['long']}",
+        "plus_di": f"plus_di_{p['dmi']}",
+        "minus_di": f"minus_di_{p['dmi']}",
+        "adx": f"adx_{p['dmi']}",
+        "parabolic": "parabolic_sar",
+        "stoch_k": f"stoch_k_{p['stoch']['k']}",
+        "stoch_d": f"stoch_d_{p['stoch']['d']}",
+        "deviation_short": f"ma_deviation_pct_{p['deviation']['short']}",
+        "deviation_long": f"ma_deviation_pct_{p['deviation']['long']}",
+        "psychological": f"psychological_line_pct_{p['psychological']}",
+        "stddev": f"stddev_{p['stddev']}",
+        "momentum": f"momentum_{p['momentum']['period']}",
+        "momentum_signal": f"momentum_signal_sma_{p['momentum']['signal']}",
+    }
+    for group in ("short", "long"):
+        for n in p["gmma"][group]:
+            names[f"gmma_{group}_{n}"] = f"gmma_{group}_ema_{n}"
+    return names
+
+
+def indicator_definitions() -> list[tuple[str, str]]:
+    """AI 向け出力に添える指標の定義と読み方（AI列名, 説明）。"""
+    p = PARAMS
+    n = ai_column_names()
+    return [
+        (f"{n['sma_short']}, {n['sma_mid']}, {n['sma_long']}", "終値の単純移動平均（短期/中期/長期）。短期>中期>長期なら上昇トレンド"),
+        (f"{n['bb_upper']}, {n['bb_mid']}, {n['bb_lower']}", f"ボリンジャーバンド。{p['bb']['period']}日移動平均±{p['bb']['sigma']}×母標準偏差。バンド外は行き過ぎの目安"),
+        (f"{n['macd']}, {n['macd_signal']}", "MACD=短期EMA−長期EMA、シグナル=MACDのEMA。MACDがシグナルを上抜けで買い、下抜けで売りの目安"),
+        (n["rsi"], "RSI（Wilder平滑）。0〜100。70以上で買われすぎ、30以下で売られすぎ"),
+        ("ichimoku_*", f"一目均衡表。転換線/基準線は期間中の(最高値+最安値)/2。先行スパンA/Bは{ich_shift_text()}先に描画される値をその日に格納。遅行スパンは{ich_shift_text()}先の終値（直近は空欄）。株価が雲(先行A/B)の上なら強気"),
+        (f"{n['ema_short']}, {n['ema_mid']}, {n['ema_long']}", "終値の指数平滑移動平均（短期/中期/長期）"),
+        (f"{n['rci_short']}, {n['rci_long']}", "RCI（日付と価格の順位相関×100）。-100〜+100。+80以上で高値圏、-80以下で底値圏"),
+        (f"{n['plus_di']}, {n['minus_di']}, {n['adx']}", "DMI/ADX。+DI>-DIなら上昇優勢。ADX 25以上でトレンドが強い"),
+        ("gmma_short_ema_*, gmma_long_ema_*", "多重移動平均(GMMA)。最短群がすべて最長群の上なら強い上昇トレンド"),
+        (n["parabolic"], f"パラボリックSAR（加速因子{p['parabolic']['step']}、上限{p['parabolic']['max']}）。終値がSARより上なら上昇トレンド"),
+        (f"{n['stoch_k']}, {n['stoch_d']}", "ストキャスティクス。0〜100。80以上で高値圏、20以下で安値圏"),
+        (f"{n['deviation_short']}, {n['deviation_long']}", "移動平均乖離率(%)=(終値−移動平均)/移動平均×100"),
+        (n["psychological"], "サイコロジカルライン(%)。期間中の上昇日の割合。75%以上で買われすぎ、25%以下で売られすぎ"),
+        (n["stddev"], "終値の母標準偏差（価格の単位）。値動きの大きさ"),
+        (f"{n['momentum']}, {n['momentum_signal']}", "モメンタム=終値−n日前終値、シグナル=その単純移動平均。0より上なら上昇の勢い"),
+    ]
+
+
+def ich_shift_text() -> str:
+    return f"{PARAMS['ichimoku']['shift']}本"
+
+
 # ---------------------------------------------------------------------------
 # 個別の計算
 # ---------------------------------------------------------------------------

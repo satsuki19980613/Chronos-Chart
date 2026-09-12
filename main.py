@@ -43,9 +43,9 @@ def main() -> None:
     db = Database(DB_PATH)
     schema_changed = db.init_schema()
     service = StockService(db, YahooFetcher(), CSV_DIR)
-    if schema_changed:
-        logging.getLogger(__name__).info("indicator columns changed, recomputing all stocks")
-        service.rebuild_all()
+    rebuilt = service.rebuild_all(only_missing_csv=not schema_changed)
+    if rebuilt:
+        logging.getLogger(__name__).info("recomputed indicators/CSV for %d stocks", rebuilt)
     api = Api(service)
 
     webview.create_window(

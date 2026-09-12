@@ -38,7 +38,7 @@ def env(tmp_path):
     db.init_schema()
     prices = make_prices(100 + np.sin(np.arange(260) / 8) * 10)
     fetcher = FakeFetcher(prices.iloc[:200])
-    service = StockService(db, fetcher, tmp_path / "csv")
+    service = StockService(db, fetcher, tmp_path / "csv", tmp_path / "output")
     return service, fetcher, prices, tmp_path
 
 
@@ -52,11 +52,14 @@ def test_register_saves_prices_indicators_and_csv(env):
     assert stock["code"] == "7203" and stock["currency"] == "JPY" and stock["row_count"] == 200
     assert len(service.db.get_indicators("7203.T")) == 200
 
-    prices_csv = pd.read_csv(tmp_path / "csv" / "7203.T_prices.csv", encoding="utf-8-sig")
+    prices_csv = pd.read_csv(tmp_path / "csv" / "7203.T_株価.csv", encoding="utf-8-sig")
     assert list(prices_csv.columns) == ["日付", "始値", "高値", "安値", "終値", "出来高"]
-    indicators_csv = pd.read_csv(tmp_path / "csv" / "7203.T_indicators.csv", encoding="utf-8-sig")
+    stored = service.db.get_prices("7203.T")
+    assert prices_csv["日付"].iloc[0] == stored["date"].iloc[-1].replace("-", "/")  # 新しい日付が先頭
+    indicators_csv = pd.read_csv(tmp_path / "csv" / "7203.T_テクニカル指標.csv", encoding="utf-8-sig")
     assert len(indicators_csv) == 200 and "RSI 中期(14)" in indicators_csv.columns
-    assert len(indicators_csv.columns) == len(INDICATOR_KEYS) + 1
+    assert list(indicators_csv.columns[:2]) == ["日付", "終値"]
+    assert len(indicators_csv.columns) == len(INDICATOR_KEYS) + 2
 
     assert service.search("7203")[0]["registered"] is True
 
@@ -110,7 +113,40 @@ def test_delete_removes_db_rows_and_csv(env):
     assert service.db.get_stock("7203.T") is None
     assert service.db.get_prices("7203.T").empty
     assert service.db.get_indicators("7203.T").empty
-    assert not (tmp_path / "csv" / "7203.T_prices.csv").exists()
+    assert not (tmp_path / "csv" / "7203.T_株価.csv").exists()
+
+
+def test_export_csv_and_markdown(env):
+    service, fetcher, prices, tmp_path = env
+    service.register("7203.T", "Toyota")
+    service.register("6758.T", "Sony")
+
+    res = service.export(["7203.T", "6758.T"], "csv", 20)
+    df = pd.read_csv(res["path"])
+    assert res["rows"] == 40 and len(df) == 40
+    assert list(df.columns[:4]) == ["symbol", "name", "currency", "date"]
+    assert {"sma_25", "rsi_14", "parabolic_sar", "gmma_long_ema_60"} <= set(df.columns)
+    assert df["date"].is_monotonic_increasing is False  # 2銘柄連結
+    assert df[df["symbol"] == "7203.T"]["date"].is_monotonic_increasing
+
+    md = service.export(["7203.T"], "markdown", None)
+    text = open(md["path"], encoding="utf-8").read()
+    assert "## indicator_definitions" in text and "## 7203.T Toyota" in text
+    assert "```csv\ndate,open,high,low,close,volume,sma_5" in text
+
+    files = service.list_exports()
+    assert {f["name"] for f in files} == {res["name"], md["name"]}
+
+
+@pytest.mark.parametrize(
+    "symbols, fmt, days",
+    [([], "csv", 20), (["7203.T"], "xml", 20), (["NOPE"], "csv", 20), (["7203.T"], "csv", 0)],
+)
+def test_export_rejects_invalid_requests(env, symbols, fmt, days):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    with pytest.raises(ValueError):
+        service.export(symbols, fmt, days)
 
 
 def test_changed_indicator_columns_trigger_rebuild(env):

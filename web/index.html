@@ -15,6 +15,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab is-active" role="tab" data-tab="register" aria-selected="true">登録</button>
       <button class="tab" role="tab" data-tab="dashboard" aria-selected="false">ダッシュボード</button>
+      <button class="tab" role="tab" data-tab="export" aria-selected="false">出力</button>
     </nav>
     <div class="header-actions">
       <button class="btn btn-ghost" id="open-csv">CSVフォルダを開く</button>
@@ -140,6 +141,73 @@
             <table class="table data-table" id="data-table"></table>
           </div>
         </div>
+      </div>
+    </section>
+    <!-- ================= 出力画面 ================= -->
+    <section class="view" id="view-export" role="tabpanel">
+      <div class="export-grid">
+        <div class="panel">
+          <div class="panel-head row">
+            <h2>出力する銘柄 <span class="count" id="export-selected">0</span></h2>
+            <label class="check-all"><input type="checkbox" id="export-check-all"> すべて選択</label>
+          </div>
+          <div class="table-wrap">
+            <table class="table selectable">
+              <thead>
+                <tr><th class="col-check"></th><th>コード</th><th>銘柄名</th><th>市場</th><th>データ期間</th><th class="num">件数</th></tr>
+              </thead>
+              <tbody id="export-stocks"></tbody>
+            </table>
+          </div>
+          <p class="empty" id="export-empty">まだ銘柄が登録されていません。「登録」タブから銘柄を登録してください。</p>
+        </div>
+
+        <div class="panel export-settings">
+          <div class="panel-head">
+            <h2>出力設定</h2>
+            <p class="hint">AI に読ませるためのファイルを作成します（閲覧用 CSV とは別形式です）。</p>
+          </div>
+          <div class="field">
+            <span class="field-label">形式</span>
+            <div class="option-cards" id="export-format">
+              <label class="option-card">
+                <input type="radio" name="export-format" value="markdown" checked>
+                <span class="option-title">テキスト（Markdown）</span>
+                <span class="option-desc">前提条件・指標の定義・最新の判定・シグナル・日次データを1ファイルに。AI にそのまま渡す用途向け</span>
+              </label>
+              <label class="option-card">
+                <input type="radio" name="export-format" value="csv">
+                <span class="option-title">CSV</span>
+                <span class="option-desc">全銘柄を1つの表に（symbol 列で区別）。英語の列名・ISO 日付・区切り文字なしの数値</span>
+              </label>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">期間</span>
+            <div class="segmented" id="export-days">
+              <button data-days="20">直近20日</button>
+              <button data-days="60" class="is-active">直近60日</button>
+              <button data-days="120">直近120日</button>
+              <button data-days="">全期間</button>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" id="export-run" disabled>出力する</button>
+          <p class="hint" id="export-dir"></p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head row">
+          <h2>出力済みファイル</h2>
+          <button class="btn" id="open-output">出力フォルダを開く</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>ファイル名</th><th>形式</th><th class="num">サイズ</th><th>作成日時</th></tr></thead>
+            <tbody id="export-files"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="export-files-empty">まだ出力したファイルはありません。</p>
       </div>
     </section>
   </main>

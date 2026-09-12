@@ -68,13 +68,28 @@ class Api:
         return self._service.dashboard(symbol)
 
     @_response
+    def export(self, symbols: list[str], fmt: str, days: int | None = None):
+        return self._service.export(symbols, fmt, days)
+
+    @_response
+    def list_exports(self):
+        return self._service.list_exports()
+
+    @_response
     def open_csv_folder(self):
-        folder = Path(self._service.csv_dir)
-        folder.mkdir(parents=True, exist_ok=True)
-        if sys.platform.startswith("win"):
-            os.startfile(folder)  # noqa: S606
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(folder)])
-        else:
-            subprocess.Popen(["xdg-open", str(folder)])
-        return str(folder)
+        return _open_folder(Path(self._service.csv_dir))
+
+    @_response
+    def open_output_folder(self):
+        return _open_folder(Path(self._service.output_dir))
+
+
+def _open_folder(folder: Path) -> str:
+    folder.mkdir(parents=True, exist_ok=True)
+    if sys.platform.startswith("win"):
+        os.startfile(folder)  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(folder)])
+    else:
+        subprocess.Popen(["xdg-open", str(folder)])
+    return str(folder)
