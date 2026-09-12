@@ -27,6 +27,14 @@ Yahoo! Finance から個別銘柄の株価（始値・高値・安値・終値�
 - 直近のシグナル一覧（ゴールデン/デッドクロス、MACD クロス、RSI 30/70）
 - 直近60日の日次データ表
 
+### 出力画面（AI 向けファイル）
+- 登録済み銘柄を複数選択し、AI（LLM）に読ませるためのファイルを `output/` に出力
+- 形式
+  - **テキスト（Markdown）**: 前提条件（データの出典・価格の調整方法・空欄の意味）、指標の定義、銘柄ごとの最新判定（`key`/`status` は英語）、期間内のシグナル、日次データ（CSV ブロック）
+  - **CSV**: 全銘柄を 1 つの表に（`symbol` 列で区別）。英語 snake_case で期間入りの列名（`sma_25`, `rsi_14` など）、ISO 日付、古い順、桁区切りなし、UTF-8（BOM なし）
+- 期間: 直近20日 / 60日 / 120日 / 全期間
+- ファイル名: `technical_<日時>_<銘柄>.md` / `.csv`
+
 ### 計算する指標（日ごとに DB と CSV に保存）
 
 | 指標 | 項目 | パラメータ |
@@ -77,16 +85,19 @@ python main.py
 
 ```
 data/
-├── autotechnical.db              # SQLite（stocks / prices / indicators テーブル）
+├── autotechnical.db                  # SQLite（stocks / prices / indicators テーブル）
 ├── csv/
-│   ├── 7203.T_prices.csv         # 日付・始値・高値・安値・終値・出来高
-│   └── 7203.T_indicators.csv     # 日ごとのテクニカル指標
+│   ├── 7203.T_株価.csv               # 日付・始値・高値・安値・終値・出来高
+│   └── 7203.T_テクニカル指標.csv     # 日付・終値・日ごとのテクニカル指標
 └── logs/app.log
+output/                               # 出力タブで作成した AI 向けファイル
 ```
 
-- CSV は閲覧用です（Excel で開けるよう UTF-8 BOM 付き）。正となるデータは SQLite 側です。
+- `data/csv/` は人が Excel で見るための CSV です（UTF-8 BOM 付き、新しい日付が上、日付は yyyy/mm/dd、
+  株価単位の指標は株価と同じ桁・その他は小数2桁）。正となるデータは SQLite 側です。
+  - 一目均衡表の遅行線は「25営業日後の終値」をその日の行に置くため、直近25行は空欄になります。
 - CSV を Excel で開いたまま更新すると CSV の書き込みだけスキップされ、画面に警告が出ます。
-- 保存先は環境変数 `AUTOTECHNICAL_DATA_DIR` で変更できます。
+- 保存先は環境変数 `AUTOTECHNICAL_DATA_DIR`（データ）/ `AUTOTECHNICAL_OUTPUT_DIR`（出力）で変更できます。
 
 ## 構成
 
@@ -99,7 +110,8 @@ app/
 ├── fetcher.py       yfinance による検索・株価取得
 ├── indicators.py    テクニカル指標の計算・シグナル判定
 ├── database.py      SQLite 操作
-├── csv_export.py    CSV 出力
+├── csv_export.py    閲覧用 CSV 出力
+├── ai_export.py     AI 向け CSV / Markdown 出力
 └── config.py        パス・定数
 web/
 ├── index.html
@@ -114,6 +126,18 @@ tests/               pytest
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest
+```
+
+| テスト | 内容 |
+| --- | --- |
+| `test_indicators.py` / `test_indicators_reference.py` | 指標の計算（ループで書いた独立実装との突き合わせ・境界値） |
+| `test_service.py` / `test_api.py` | 登録・更新・分割・削除・出力、JS 向け API の正常系/異常系/並行実行 |
+| `test_export.py` | AI 向け CSV/Markdown と閲覧用 CSV の形式 |
+| `test_dev_server.py` | 開発用サーバーの HTTP 応答・不正リクエスト・パストラバーサル |
+| `test_live_yahoo.py` | 実際の Yahoo! Finance との通信（`AUTOTECHNICAL_LIVE=1` のときだけ実行） |
+
+```bash
+AUTOTECHNICAL_LIVE=1 python -m pytest tests/test_live_yahoo.py
 ```
 
 ブラウザで画面を確認したいときは `python dev_server.py` を起動し、`http://127.0.0.1:8765/?dev` を開きます。

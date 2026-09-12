@@ -38,11 +38,19 @@ class StockService:
         """銘柄を登録する。初回は過去1年分を取得、登録済みなら差分更新。"""
         if self.db.get_stock(symbol) is None:
             prices = self.fetcher.fetch_history(symbol, period=INITIAL_PERIOD)
+            if prices.empty:
+                raise ValueError(f"{symbol} の株価データを取得できませんでした")
             currency = self.fetcher.fetch_currency(symbol)
             self.db.upsert_stock(symbol, code_from_symbol(symbol), name or symbol, exchange, currency)
             with self._symbol_locks[symbol]:
-                self.db.upsert_prices(symbol, prices, replace=True)
-                warnings = self._rebuild(symbol)
+                try:
+                    self.db.upsert_prices(symbol, prices, replace=True)
+                    warnings = self._rebuild(symbol)
+                except Exception:
+                    # 途中で失敗したら「登録済みだがデータなし」の状態を残さない
+                    self.db.delete_stock(symbol)
+                    remove_csv(self.csv_dir, symbol)
+                    raise
             log.info("registered %s (%d rows)", symbol, len(prices))
             return {"stock": self.db.get_stock(symbol), "added": len(prices), "warnings": warnings}
         return self.update(symbol)
@@ -100,6 +108,8 @@ class StockService:
         return count
 
     def delete(self, symbol: str) -> None:
+        if self.db.get_stock(symbol) is None:
+            raise ValueError(f"{symbol} は登録されていません")
         with self._symbol_locks[symbol]:
             self.db.delete_stock(symbol)
             remove_csv(self.csv_dir, symbol)
@@ -154,7 +164,6 @@ class StockService:
                 "close": _clean(prices["close"]),
                 "volume": _clean(prices["volume"]),
                 "indicators": {key: _clean(indicators[key]) for key in ind.INDICATOR_KEYS},
-                "labels": dict(ind.INDICATOR_COLUMNS),
                 "params": ind.PARAMS,
                 "future_cloud": _future_cloud(prices),
                 "signals": signals,
@@ -198,13 +207,10 @@ def _future_cloud(prices: pd.DataFrame) -> list[dict]:
 def _table(prices: pd.DataFrame, indicators: pd.DataFrame, limit: int) -> dict:
     merged = prices.merge(indicators, on="date", how="left").tail(limit).iloc[::-1]
     columns = [
-        {"key": "date", "label": "日付"},
-        {"key": "open", "label": "始値"},
-        {"key": "high", "label": "高値"},
-        {"key": "low", "label": "安値"},
-        {"key": "close", "label": "終値"},
-        {"key": "volume", "label": "出来高"},
-        *({"key": k, "label": label} for k, label in ind.INDICATOR_COLUMNS),
+        {"key": "date", "label": "日付", "kind": "date"},
+        *({"key": k, "label": label, "kind": "price"} for k, label in (("open", "始値"), ("high", "高値"), ("low", "安値"), ("close", "終値"))),
+        {"key": "volume", "label": "出来高", "kind": "volume"},
+        *({"key": k, "label": label, "kind": ind.value_kind(k)} for k, label in ind.INDICATOR_COLUMNS),
     ]
     rows = []
     for record in merged.to_dict("records"):

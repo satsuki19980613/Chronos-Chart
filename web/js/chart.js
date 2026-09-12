@@ -360,7 +360,7 @@ window.StockChart = (function () {
         parts.push(`<span class="lg-date">${f.date(future[i - dates.length].date)}（先行）</span>`);
       }
       for (const [label, color, values] of legendItems) {
-        parts.push(`<span style="color:${color}">${label} <b>${f.price(values[i] ?? null, currency)}</b></span>`);
+        parts.push(`<span style="color:${color}">${f.escape(label)} <b>${f.price(values[i] ?? null, currency)}</b></span>`);
       }
       legendEl.innerHTML = parts.join("");
     }

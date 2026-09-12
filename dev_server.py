@@ -25,13 +25,22 @@ from app.service import StockService
 def make_handler(api: Api):
     class Handler(SimpleHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
+            # 先にボディを読み切る（未読のまま閉じると Windows では接続がリセットされ、クライアントに応答が届かない）
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length)
             method = self.path.removeprefix("/api/")
             func = getattr(api, method, None) if not method.startswith("_") else None
             if func is None or not callable(func):
                 self.send_error(404)
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            args = json.loads(self.rfile.read(length) or b"[]")
+            try:
+                args = json.loads(raw or b"[]")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self.send_error(400, "request body must be a JSON array")
+                return
+            if not isinstance(args, list):
+                self.send_error(400, "request body must be a JSON array")
+                return
             body = json.dumps(func(*args), ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")

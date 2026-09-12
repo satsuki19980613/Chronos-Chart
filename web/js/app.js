@@ -45,6 +45,7 @@
   }
 
   async function withBusy(text, fn) {
+    if (!$("busy").hidden) return undefined; // 処理中の二重実行（Enter 連打など）を防ぐ
     $("busy-text").textContent = text;
     $("busy").hidden = false;
     try {
@@ -201,10 +202,15 @@
       return;
     }
     const target = symbol && state.stocks.some((s) => s.symbol === symbol) ? symbol : state.stocks[0].symbol;
+    const data = await withBusy("読み込み中…", () => api.call("dashboard", target));
+    if (!data) {
+      // 読み込みに失敗したら、表示中の銘柄に選択を戻して画面と状態を一致させる
+      const shown = state.dashboard?.stock.symbol;
+      if (shown && state.stocks.some((s) => s.symbol === shown)) $("stock-select").value = shown;
+      return;
+    }
     state.currentSymbol = target;
     $("stock-select").value = target;
-    const data = await withBusy("読み込み中…", () => api.call("dashboard", target));
-    if (!data) return;
     state.dashboard = data;
     renderDashboard();
   }
@@ -269,17 +275,17 @@
   }
 
   function renderTable(table, currency) {
-    const priceKeys = new Set(["open", "high", "low", "close"]);
-    const format = (key, v) => {
-      if (key === "date") return f.date(v);
+    // kind はサーバー側で付与（price: 株価と同じ単位 / volume / date / その他は小数2桁）
+    const format = (col, v) => {
+      if (col.kind === "date") return f.date(v);
       if (v === null || v === undefined) return "—";
-      if (key === "volume" || key.startsWith("volume_ma")) return f.num(v);
-      if (priceKeys.has(key)) return f.price(v, currency);
+      if (col.kind === "volume") return f.num(v);
+      if (col.kind === "price") return f.price(v, currency);
       return f.num(v, 2);
     };
     $("data-table").innerHTML = `
       <thead><tr>${table.columns.map((c) => `<th>${f.escape(c.label)}</th>`).join("")}</tr></thead>
-      <tbody>${table.rows.map((r) => `<tr>${table.columns.map((c) => `<td>${format(c.key, r[c.key])}</td>`).join("")}</tr>`).join("")}</tbody>`;
+      <tbody>${table.rows.map((r) => `<tr>${table.columns.map((c) => `<td>${format(c, r[c.key])}</td>`).join("")}</tr>`).join("")}</tbody>`;
   }
 
   function destroyChart() {

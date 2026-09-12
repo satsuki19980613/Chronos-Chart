@@ -53,7 +53,8 @@ def _human_frame(frame: pd.DataFrame, decimals: dict[str, int]) -> pd.DataFrame:
     out["date"] = out["date"].str.replace("-", "/", regex=False)
     for col, digits in decimals.items():
         if col in out:
-            out[col] = out[col].round(digits)
+            # 0 行の DataFrame は SQLite から object 型で返るため数値型にそろえてから丸める
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(digits)
     return out
 
 
@@ -62,7 +63,7 @@ def build_human_tables(prices: pd.DataFrame, indicators: pd.DataFrame, currency:
     kind_digits = {"price": pd_digits, "macd": 2, "pct": 2}
 
     price_table = _human_frame(prices[list(PRICE_LABELS)].copy(), {c: pd_digits for c in ("open", "high", "low", "close")})
-    price_table["volume"] = price_table["volume"].astype("int64")
+    price_table["volume"] = pd.to_numeric(price_table["volume"], errors="coerce").fillna(0).astype("int64")
     price_table = price_table.rename(columns=PRICE_LABELS)
 
     merged = indicators.merge(prices[["date", "close"]], on="date", how="left")

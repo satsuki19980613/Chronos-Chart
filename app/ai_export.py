@@ -56,6 +56,9 @@ def validate_request(symbols: list[str], fmt: str, days: int | None) -> tuple[li
     if not symbols:
         raise ValueError("出力する銘柄を選択してください")
     if days is not None:
+        # 整数と整数表記の文字列（"20"）のみ受け付ける。20.5 や True は拒否する
+        if isinstance(days, bool) or (isinstance(days, float) and not days.is_integer()):
+            raise ValueError(f"期間が不正です: {days}")
         try:
             days = int(days)
         except (TypeError, ValueError):
@@ -117,7 +120,9 @@ def _fmt(value) -> str:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return ""
     if isinstance(value, float):
-        return f"{round(value, 4):g}" if abs(value) < 1e15 else str(value)
+        # 指数表記や有効桁の切り捨てをせず、日次データの CSV ブロックと同じ小数4桁までで表す
+        text = f"{round(value, 4):.4f}".rstrip("0").rstrip(".")
+        return "0" if text == "-0" else text
     return str(value)
 
 
@@ -140,7 +145,9 @@ def render_markdown(data: list[StockData], generated_at: datetime | None = None)
     w("- price_basis: split-adjusted, not dividend-adjusted\n")
     w("- row_order: oldest to newest\n")
     w("- missing_values: empty = not enough history to compute (e.g. long moving averages near the start, chikou span for the latest days)\n")
-    w("- status_values: bullish / bearish / neutral / insufficient_data (mechanical rules below, not investment advice)\n\n")
+    w("- status_values: bullish / bearish / neutral / insufficient_data (mechanical rules, not investment advice)\n")
+    w("- signal_codes: GC/DC = short SMA crosses mid SMA up/down, M+/M- = MACD crosses signal up/down, R30 = RSI recovers above 30, R70 = RSI falls below 70\n")
+    w("- language: column names are English; indicator labels and notes are Japanese\n\n")
 
     w("## indicator_definitions\n\n")
     w("| columns | definition |\n|---|---|\n")
@@ -169,18 +176,21 @@ def render_markdown(data: list[StockData], generated_at: datetime | None = None)
             w(f"- change: {_fmt(close - prev_close)}\n- change_pct: {_fmt((close - prev_close) / prev_close * 100)}\n")
         w("\n")
 
-        w("| indicator | status | value | note |\n|---|---|---|---|\n")
+        w("| key | indicator | status | value | note |\n|---|---|---|---|---|\n")
         for card in ind.evaluate_latest(prices, d.indicators):
-            w(f"| {_md_cell(card['label'])} | {STATUS_EN[card['status']]} | {_fmt(card['value'])} | {_md_cell(card['note'])} |\n")
+            w(
+                f"| {card['key']} | {_md_cell(card['label'])} | {STATUS_EN[card['status']]} "
+                f"| {_fmt(card['value'])} | {_md_cell(card['note'])} |\n"
+            )
         w("\n")
 
         start = table["date"].iloc[0]
         signals = [sig for sig in ind.detect_signals(d.indicators) if sig["date"] >= start]
         w("### signals_in_exported_range\n\n")
         if signals:
-            w("| date | direction | signal |\n|---|---|---|\n")
+            w("| date | direction | code | signal |\n|---|---|---|---|\n")
             for sig in signals:
-                w(f"| {sig['date']} | {sig['direction']} | {_md_cell(sig['label'])} |\n")
+                w(f"| {sig['date']} | {sig['direction']} | {sig['short']} | {_md_cell(sig['label'])} |\n")
         else:
             w("none\n")
         w("\n")

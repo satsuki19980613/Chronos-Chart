@@ -134,11 +134,18 @@ def indicator_definitions() -> list[tuple[str, str]]:
         (f"{n['bb_upper']}, {n['bb_mid']}, {n['bb_lower']}", f"ボリンジャーバンド。{p['bb']['period']}日移動平均±{p['bb']['sigma']}×母標準偏差。バンド外は行き過ぎの目安"),
         (f"{n['macd']}, {n['macd_signal']}", "MACD=短期EMA−長期EMA、シグナル=MACDのEMA。MACDがシグナルを上抜けで買い、下抜けで売りの目安"),
         (n["rsi"], "RSI（Wilder平滑）。0〜100。70以上で買われすぎ、30以下で売られすぎ"),
-        ("ichimoku_*", f"一目均衡表。転換線/基準線は期間中の(最高値+最安値)/2。先行スパンA/Bは{ich_shift_text()}先に描画される値をその日に格納。遅行スパンは{ich_shift_text()}先の終値（直近は空欄）。株価が雲(先行A/B)の上なら強気"),
+        (
+            ", ".join(n[k] for k in ("ichimoku_kijun", "ichimoku_tenkan", "ichimoku_senkou1", "ichimoku_senkou2", "ichimoku_chikou")),
+            f"一目均衡表。基準線/転換線は期間中の(最高値+最安値)/2。先行スパンA=(基準線+転換線)/2、先行スパンB={p['ichimoku']['senkou2']}日の(最高値+最安値)/2 で、"
+            f"いずれも{ich_shift_text()}先に描画される値をその日の行に格納。遅行スパンは{ich_shift_text()}先の終値をその日の行に格納（直近{ich_shift_text()}は空欄）。株価が雲(先行A/B)の上なら強気",
+        ),
         (f"{n['ema_short']}, {n['ema_mid']}, {n['ema_long']}", "終値の指数平滑移動平均（短期/中期/長期）"),
         (f"{n['rci_short']}, {n['rci_long']}", "RCI（日付と価格の順位相関×100）。-100〜+100。+80以上で高値圏、-80以下で底値圏"),
         (f"{n['plus_di']}, {n['minus_di']}, {n['adx']}", "DMI/ADX。+DI>-DIなら上昇優勢。ADX 25以上でトレンドが強い"),
-        ("gmma_short_ema_*, gmma_long_ema_*", "多重移動平均(GMMA)。最短群がすべて最長群の上なら強い上昇トレンド"),
+        (
+            ", ".join(n[f"gmma_{g}_{x}"] for g in ("short", "long") for x in p["gmma"][g]),
+            "多重移動平均(GMMA)。終値の指数平滑移動平均の最短群(short)と最長群(long)。最短群がすべて最長群の上なら強い上昇トレンド",
+        ),
         (n["parabolic"], f"パラボリックSAR（加速因子{p['parabolic']['step']}、上限{p['parabolic']['max']}）。終値がSARより上なら上昇トレンド"),
         (f"{n['stoch_k']}, {n['stoch_d']}", "ストキャスティクス。0〜100。80以上で高値圏、20以下で安値圏"),
         (f"{n['deviation_short']}, {n['deviation_long']}", "移動平均乖離率(%)=(終値−移動平均)/移動平均×100"),
@@ -186,6 +193,8 @@ def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:
 
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
+    # alpha=2/(period+1)。先頭の値から再帰を始め、最初の period-1 本は空欄にする
+    # （SMA を初期値にするツールとは序盤の値がわずかに異なるが、数十本で収束する）
     return series.ewm(span=period, adjust=False, min_periods=period).mean()
 
 
@@ -198,8 +207,9 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = wilder_smooth(delta.clip(lower=0), period)
     avg_loss = wilder_smooth(-delta.clip(upper=0), period)
     result = 100 - 100 / (1 + _safe_div(avg_gain, avg_loss))
-    # 下落がゼロの区間は RSI=100
-    result[(avg_loss == 0) & avg_gain.notna()] = 100.0
+    # 下落がゼロの区間は RSI=100。上昇も下落もゼロ（完全に横ばい）なら中立の 50
+    result[(avg_loss == 0) & (avg_gain > 0)] = 100.0
+    result[(avg_loss == 0) & (avg_gain == 0)] = 50.0
     return result
 
 
@@ -447,7 +457,7 @@ def evaluate_latest(prices: pd.DataFrame, indicators: pd.DataFrame) -> list[dict
     macd, sig = v("macd"), v("macd_signal")
     if has(macd, sig):
         card("macd", "MACD", macd, "bull" if macd > sig else "bear",
-             f"MACD がシグナル（{sig:,.2f}）より{'上' if macd > sig else '下'}", "trend")
+             f"MACD がシグナル（{sig:.2f}）より{'上' if macd > sig else '下'}", "trend")
 
     tenkan, kijun, s1, s2 = v("ichimoku_tenkan"), v("ichimoku_kijun"), v("ichimoku_senkou1"), v("ichimoku_senkou2")
     if has(s1, s2):
@@ -528,7 +538,7 @@ def evaluate_latest(prices: pd.DataFrame, indicators: pd.DataFrame) -> list[dict
         elif mom < 0 and mom < mom_sig:
             status, note = "bear", "0より下でシグナルを下回る"
         else:
-            status, note = "neutral", f"シグナル {mom_sig:,.2f}"
+            status, note = "neutral", f"シグナル {mom_sig:.2f}"
         card("momentum", f"モメンタム({p['momentum']['period']})", mom, status, note, "oscillator")
 
     # ---- ボラティリティ系 ----
@@ -540,7 +550,7 @@ def evaluate_latest(prices: pd.DataFrame, indicators: pd.DataFrame) -> list[dict
         elif close <= lower:
             status, note = "bull", f"-{sigma}σ 以下"
         else:
-            status, note = "neutral", f"±{sigma}σ の範囲内（{lower:,.1f} 〜 {upper:,.1f}）"
+            status, note = "neutral", f"±{sigma}σ の範囲内（{lower:.1f} 〜 {upper:.1f}）"
         card("bb", "ボリンジャーバンド", v("bb_mid"), status, note, "volatility")
 
     sd = v("stddev")
