@@ -1,0 +1,19 @@
+# 取得データ（DB・CSV・ログ）は公開しない
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.spec
+
+# エディタ・ツール
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db

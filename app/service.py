@@ -1,0 +1,189 @@
+"""画面から呼ばれる業務ロジック（検索・登録・更新・ダッシュボード用データ組み立て）。"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from . import indicators as ind
+from .config import INITIAL_PERIOD
+from .csv_export import csv_paths, export_csv, remove_csv
+from .database import Database
+from .fetcher import YahooFetcher, code_from_symbol
+
+log = logging.getLogger(__name__)
+
+
+class StockService:
+    def __init__(self, db: Database, fetcher: YahooFetcher, csv_dir: Path):
+        self.db = db
+        self.fetcher = fetcher
+        self.csv_dir = csv_dir
+        # 同じ銘柄の登録/更新が同時に走らないようにする
+        self._symbol_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+
+    # ---------- 検索・登録 ----------
+    def search(self, query: str) -> list[dict]:
+        registered = {s["symbol"] for s in self.db.list_stocks()}
+        return [{**r.to_dict(), "registered": r.symbol in registered} for r in self.fetcher.search(query)]
+
+    def register(self, symbol: str, name: str, exchange: str | None = None) -> dict:
+        """銘柄を登録する。初回は過去1年分を取得、登録済みなら差分更新。"""
+        if self.db.get_stock(symbol) is None:
+            prices = self.fetcher.fetch_history(symbol, period=INITIAL_PERIOD)
+            currency = self.fetcher.fetch_currency(symbol)
+            self.db.upsert_stock(symbol, code_from_symbol(symbol), name or symbol, exchange, currency)
+            with self._symbol_locks[symbol]:
+                self.db.upsert_prices(symbol, prices, replace=True)
+                warnings = self._rebuild(symbol)
+            log.info("registered %s (%d rows)", symbol, len(prices))
+            return {"stock": self.db.get_stock(symbol), "added": len(prices), "warnings": warnings}
+        return self.update(symbol)
+
+    def update(self, symbol: str) -> dict:
+        """最終取得日以降のデータを取得して指標・CSVを再計算する。"""
+        if self.db.get_stock(symbol) is None:
+            raise ValueError(f"{symbol} は登録されていません")
+
+        with self._symbol_locks[symbol]:
+            first_date, last_date = self.db.get_price_range(symbol)
+            before = len(self.db.get_prices(symbol))
+            if last_date is None:
+                prices = self.fetcher.fetch_history(symbol, period=INITIAL_PERIOD)
+                self.db.upsert_prices(symbol, prices, replace=True)
+            else:
+                # 最終日も再取得する（取得時点で当日の値が確定していなかった場合に備える）
+                prices = self.fetcher.fetch_history(symbol, start=last_date)
+                if (prices.loc[prices["date"] > last_date, "splits"].fillna(0) != 0).any():
+                    # 株式分割があると過去の価格も調整されるため、保有期間全体を取り直す
+                    log.info("split detected for %s, refetching from %s", symbol, first_date)
+                    prices = self.fetcher.fetch_history(symbol, start=first_date)
+                    self.db.upsert_prices(symbol, prices, replace=True)
+                else:
+                    self.db.upsert_prices(symbol, prices)
+            warnings = self._rebuild(symbol)
+
+        after = len(self.db.get_prices(symbol))
+        return {"stock": self.db.get_stock(symbol), "added": after - before, "warnings": warnings}
+
+    def update_all(self) -> dict:
+        results, errors = [], []
+        for stock in self.db.list_stocks():
+            try:
+                results.append(self.update(stock["symbol"]))
+            except Exception as exc:
+                log.exception("update failed for %s", stock["symbol"])
+                errors.append(f"{stock['symbol']}: {exc}")
+        return {"updated": len(results), "errors": errors, "warnings": [w for r in results for w in r["warnings"]]}
+
+    def delete(self, symbol: str) -> None:
+        with self._symbol_locks[symbol]:
+            self.db.delete_stock(symbol)
+            remove_csv(self.csv_dir, symbol)
+
+    def list_stocks(self) -> list[dict]:
+        return self.db.list_stocks()
+
+    def _rebuild(self, symbol: str) -> list[str]:
+        """DB の全株価から指標を計算し直し、DB と CSV に保存する。"""
+        prices = self.db.get_prices(symbol)
+        indicators = ind.compute_indicators(prices)
+        self.db.replace_indicators(symbol, indicators)
+        warnings = export_csv(self.csv_dir, symbol, prices, indicators)
+        self.db.touch_stock(symbol)
+        return warnings
+
+    # ---------- ダッシュボード ----------
+    def dashboard(self, symbol: str) -> dict:
+        stock = self.db.get_stock(symbol)
+        if stock is None:
+            raise ValueError(f"{symbol} は登録されていません")
+
+        prices = self.db.get_prices(symbol)
+        indicators = self.db.get_indicators(symbol)
+        if prices.empty:
+            raise ValueError(f"{symbol} の株価データがありません。更新してください")
+        if len(indicators) != len(prices):
+            self._rebuild(symbol)
+            indicators = self.db.get_indicators(symbol)
+
+        signals = ind.detect_signals(indicators)
+        paths = csv_paths(self.csv_dir, symbol)
+
+        return {
+            "stock": stock,
+            "quote": _quote(prices),
+            "cards": ind.evaluate_latest(prices, indicators),
+            "signals": list(reversed(signals[-12:])),
+            "chart": {
+                "dates": prices["date"].tolist(),
+                "open": _clean(prices["open"]),
+                "high": _clean(prices["high"]),
+                "low": _clean(prices["low"]),
+                "close": _clean(prices["close"]),
+                "volume": _clean(prices["volume"]),
+                "indicators": {key: _clean(indicators[key]) for key in ind.INDICATOR_KEYS},
+                "future_cloud": _future_cloud(prices),
+                "signals": signals,
+            },
+            "table": _table(prices, indicators, limit=60),
+            "csv": {k: str(p) for k, p in paths.items()},
+        }
+
+
+def _clean(series: pd.Series) -> list:
+    """JSON 化できるよう NaN を None に、numpy 型を Python 型にする。"""
+    arr = series.to_numpy(dtype=float)
+    return [None if np.isnan(v) else float(v) for v in arr]
+
+
+def _quote(prices: pd.DataFrame) -> dict:
+    last = prices.iloc[-1]
+    prev_close = float(prices["close"].iloc[-2]) if len(prices) > 1 else None
+    close = float(last["close"])
+    change = close - prev_close if prev_close else None
+    return {
+        "date": last["date"],
+        "open": float(last["open"]),
+        "high": float(last["high"]),
+        "low": float(last["low"]),
+        "close": close,
+        "volume": int(last["volume"]),
+        "change": change,
+        "change_pct": change / prev_close * 100 if prev_close else None,
+    }
+
+
+def _future_cloud(prices: pd.DataFrame) -> list[dict]:
+    # 将来日付は土日のみ除いた営業日で近似する（祝日は考慮しない）
+    last = pd.Timestamp(prices["date"].iloc[-1])
+    future_dates = pd.bdate_range(last + pd.Timedelta(days=1), periods=ind.ICHIMOKU_SHIFT)
+    cloud = ind.ichimoku_future_cloud(prices)
+    return [{**c, "date": d.strftime("%Y-%m-%d")} for c, d in zip(cloud, future_dates)]
+
+
+def _table(prices: pd.DataFrame, indicators: pd.DataFrame, limit: int) -> dict:
+    merged = prices.merge(indicators, on="date", how="left").tail(limit).iloc[::-1]
+    columns = [
+        {"key": "date", "label": "日付"},
+        {"key": "open", "label": "始値"},
+        {"key": "high", "label": "高値"},
+        {"key": "low", "label": "安値"},
+        {"key": "close", "label": "終値"},
+        {"key": "volume", "label": "出来高"},
+        *({"key": k, "label": label} for k, label in ind.INDICATOR_COLUMNS),
+    ]
+    rows = []
+    for record in merged.to_dict("records"):
+        rows.append(
+            {
+                k: (None if isinstance(v, float) and np.isnan(v) else v.item() if hasattr(v, "item") else v)
+                for k, v in record.items()
+            }
+        )
+    return {"columns": columns, "rows": rows}

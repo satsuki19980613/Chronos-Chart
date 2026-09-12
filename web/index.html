@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Autotechnical</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Autotechnical</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" role="tab" data-tab="register" aria-selected="true">登録</button>
+      <button class="tab" role="tab" data-tab="dashboard" aria-selected="false">ダッシュボード</button>
+    </nav>
+    <div class="header-actions">
+      <button class="btn btn-ghost" id="open-csv">CSVフォルダを開く</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ================= 登録画面 ================= -->
+    <section class="view is-active" id="view-register" role="tabpanel">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>銘柄を検索</h2>
+          <p class="hint">銘柄コード（例: 7203）、ティッカー（例: AAPL）、英語の社名で検索できます。初めて登録する銘柄は過去1年分の株価を取得します。</p>
+        </div>
+        <form class="search-form" id="search-form" autocomplete="off">
+          <input class="input" id="search-input" type="text" placeholder="銘柄コードを入力" maxlength="40" autofocus>
+          <button class="btn btn-primary" type="submit">検索</button>
+        </form>
+        <div class="table-wrap" id="search-results-wrap" hidden>
+          <table class="table">
+            <thead>
+              <tr><th>シンボル</th><th>銘柄名</th><th>市場</th><th>種別</th><th class="col-actions"></th></tr>
+            </thead>
+            <tbody id="search-results"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="search-empty" hidden>該当する銘柄が見つかりませんでした。</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head row">
+          <h2>登録済み銘柄 <span class="count" id="stock-count">0</span></h2>
+          <button class="btn" id="update-all">全銘柄を更新</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>コード</th><th>銘柄名</th><th>市場</th><th>データ期間</th>
+                <th class="num">件数</th><th>最終更新</th><th class="col-actions"></th>
+              </tr>
+            </thead>
+            <tbody id="stock-list"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="stock-empty">まだ銘柄が登録されていません。上の検索から登録してください。</p>
+      </div>
+    </section>
+
+    <!-- ================= ダッシュボード画面 ================= -->
+    <section class="view" id="view-dashboard" role="tabpanel">
+      <div class="dash-toolbar">
+        <select class="input select" id="stock-select" aria-label="銘柄"></select>
+        <button class="btn" id="dash-update">最新データに更新</button>
+        <span class="toolbar-note" id="dash-updated"></span>
+      </div>
+
+      <p class="empty big" id="dash-empty">登録済みの銘柄がありません。「登録」タブから銘柄を登録してください。</p>
+
+      <div id="dash-content" hidden>
+        <div class="quote-bar">
+          <div class="quote-name">
+            <div class="quote-title" id="q-name"></div>
+            <div class="quote-sub" id="q-sub"></div>
+          </div>
+          <div class="quote-price">
+            <span class="price" id="q-close"></span>
+            <span class="change" id="q-change"></span>
+          </div>
+          <dl class="quote-stats">
+            <div><dt>始値</dt><dd id="q-open"></dd></div>
+            <div><dt>高値</dt><dd id="q-high"></dd></div>
+            <div><dt>安値</dt><dd id="q-low"></dd></div>
+            <div><dt>出来高</dt><dd id="q-volume"></dd></div>
+          </dl>
+        </div>
+
+        <div class="dash-grid">
+          <div class="panel chart-panel">
+            <div class="chart-controls">
+              <div class="control-group">
+                <span class="control-label">期間</span>
+                <div class="segmented" id="range-buttons">
+                  <button data-range="63">3ヶ月</button>
+                  <button data-range="126">6ヶ月</button>
+                  <button data-range="all" class="is-active">全期間</button>
+                </div>
+              </div>
+              <div class="control-group">
+                <span class="control-label">メイン</span>
+                <div class="chips" id="overlay-chips"></div>
+              </div>
+              <div class="control-group">
+                <span class="control-label">サブ</span>
+                <div class="chips" id="pane-chips"></div>
+              </div>
+            </div>
+            <div class="chart-shell">
+              <div class="chart-legend" id="chart-legend"></div>
+              <div class="pane-labels" id="pane-labels"></div>
+              <div id="chart"></div>
+            </div>
+          </div>
+
+          <aside class="side">
+            <div class="panel">
+              <div class="panel-head"><h2>テクニカル判定 <span class="hint-inline" id="cards-date"></span></h2></div>
+              <div id="cards"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>直近のシグナル</h2></div>
+              <ul class="signal-list" id="signals"></ul>
+            </div>
+          </aside>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head row">
+            <h2>日次データ（直近60日）</h2>
+            <span class="hint-inline">全期間のデータは CSV フォルダにあります</span>
+          </div>
+          <div class="table-wrap data-table-wrap">
+            <table class="table data-table" id="data-table"></table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="busy" id="busy" hidden>
+    <div class="busy-box"><span class="spinner"></span><span id="busy-text">処理中…</span></div>
+  </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="js/bridge.js"></script>
+  <script src="js/format.js"></script>
+  <script src="js/chart.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
