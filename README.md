@@ -75,6 +75,15 @@ pip install -r requirements.txt
 
 ## 起動
 
+Windows では **`start.bat` をダブルクリック**するだけで起動できます。
+
+- `.venv` フォルダがあればその Python を、なければ PATH 上の Python を使います
+- 必要なライブラリが入っていなければ、初回に `requirements.txt` から自動でインストールします
+- コンソールを出さずにアプリだけが起動します（エラーは `data/logs/app.log` に記録）
+- コマンドプロンプトから `start.bat --debug` で、コンソールと開発者ツール付きで起動します
+
+コマンドから直接起動する場合:
+
 ```bash
 python main.py
 ```
