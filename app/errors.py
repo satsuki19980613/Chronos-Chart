@@ -8,3 +8,7 @@ class UserFacingError(ValueError):
 
     api._response は ValueError のメッセージをそのまま返すので、その規約に乗せる。
     """
+
+
+class Cancelled(Exception):
+    """ユーザーが処理を中断した。エラーではないので、ジョブ側で捕まえて 'cancelled' として扱う。"""
