@@ -6,6 +6,7 @@ pywebview の API 呼び出しは別スレッドで実行されるため、
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -19,6 +20,8 @@ import pandas as pd
 from .indicators import INDICATOR_KEYS
 
 PRICE_KEYS = ["open", "high", "low", "close", "volume"]
+
+log = logging.getLogger(__name__)
 
 
 class Database:
@@ -88,7 +91,78 @@ class Database:
                 );
                 """
             )
+            self._migrate(conn)
         return rebuilt
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """schema_version より新しい移行を順に適用する（再実行しても同じ結果になる）。
+
+        indicators と違い、ここで足すテーブルは再取得コストが高い（再取得できないものもある）ので
+        作り直さず、バージョンごとの移行関数で育てる。
+        """
+        conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        row = conn.execute("SELECT value FROM settings WHERE key = 'schema_version'").fetchone()
+        current = int(row["value"]) if row else 0
+        for version, migrate in MIGRATIONS:
+            if version <= current:
+                continue
+            # sqlite3 は DDL の前に暗黙のトランザクションを張らないので、明示的に囲んで
+            # 「移行の途中まで適用された DB」を残さない
+            conn.commit()
+            conn.execute("BEGIN")
+            try:
+                migrate(conn)
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('schema_version', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (str(version),),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            log.info("migrated schema to version %d", version)
+
+    def schema_version(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'schema_version'").fetchone()
+        return int(row["value"]) if row else 0
+
+    # ---------- settings ----------
+    def get_setting(self, key: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def get_settings(self) -> dict[str, str]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        return {r["key"]: r["value"] for r in rows}
+
+    def set_setting(self, key: str, value: str | None) -> None:
+        with self.write() as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+    # ---------- fetch_log ----------
+    def log_fetch(self, source: str, key: str, result: str = "ok") -> None:
+        with self.write() as conn:
+            conn.execute(
+                "INSERT INTO fetch_log (source, key, fetched_at, result) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(source, key) DO UPDATE SET fetched_at = excluded.fetched_at, result = excluded.result",
+                (source, key, _now(), result),
+            )
+
+    def get_fetch(self, source: str, key: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT source, key, fetched_at, result FROM fetch_log WHERE source = ? AND key = ?",
+                (source, key),
+            ).fetchone()
+        return dict(row) if row else None
 
     # ---------- stocks ----------
     def upsert_stock(self, symbol: str, code: str, name: str, exchange: str | None, currency: str | None) -> None:
@@ -200,3 +274,32 @@ def _to_db(value):
     if isinstance(value, (float, np.floating)):
         return None if np.isnan(value) else float(value)
     return value
+
+
+def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """既存テーブルに列が無ければ足す（移行関数から使う）。ddl は 'INTEGER DEFAULT 0' のような型定義。"""
+    existing = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def _migrate_v1(conn: sqlite3.Connection) -> None:
+    """取得の記録（差分取得・スキップ判定用）。settings は _migrate が先に作る。"""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fetch_log (
+            source     TEXT NOT NULL,
+            key        TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            result     TEXT,
+            PRIMARY KEY (source, key)
+        )
+        """
+    )
+
+
+# (バージョン, 移行関数)。追加するときは末尾に足し、既存の関数は書き換えない。
+# 貸借取引残高（margin_balances）は再取得できないので、どの移行でも DROP しないこと。
+MIGRATIONS = [
+    (1, _migrate_v1),
+]

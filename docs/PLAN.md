@@ -59,9 +59,9 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P1（基盤） |
-| **次にやること** | P1-3（マイグレーション基盤） |
+| **次にやること** | P1-4（設定モジュール）。P1-5（共通HTTPクライアント）も依存を満たしており並行可 |
 | **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。設計文書一式（レビュー結果・SPEC/PLAN 1.1 を含む）を `main` にマージし、**`origin/main` に push 済み**（`main` は `origin/main` を追跡）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
-| **動作確認** | 2026-09-20、P1-1（改名）後に `python -m pytest` で **252 passed / 15 skipped**（skip は実通信テストのみ）。GUI の実機起動は未確認 |
+| **動作確認** | 2026-09-20、P1-1（改名）〜P1-3 後に `python -m pytest` で **261 passed / 15 skipped**（skip は実通信テストのみ）。GUI の実機起動は未確認 |
 
 ### フェーズの状態
 
@@ -100,7 +100,7 @@
 |---|---|---|---|---|---|
 | P1-1 | `DONE` | プロジェクト名の変更 | `Autotechnical` → `Chronos Chart`。環境変数 `AUTOTECHNICAL_*` → `CHRONOS_*`、DB名 `chronos.db`、`app.js` の `STORAGE_KEY`。README 更新。既存テスト（`test_dev_server.py:189`・`test_live_yahoo.py` の参照を含む）が通る。※現環境に `data/` は無く DB の移行は不要 | P0-6 | `config.py` `main.py` `start.bat` `README.md` `app.js` `tests/` |
 | P1-2 | `DONE` | 依存追加 | `requirements.txt` に `requests` `beautifulsoup4` `lxml` `keyring` `tzdata` `google-genai` `pydantic` `jinja2`。クリーン環境で `pip install -r` が通る | P1-1 | `requirements.txt` |
-| P1-3 | `TODO` | マイグレーション基盤 | `settings`（`schema_version`）と `fetch_log` を作成。バージョンごとの移行関数の枠組み。既存DBからの移行と再実行の冪等性。以後のテーブル追加は各フェーズで移行として足す。`test_migration.py` | P1-1 | `database.py` |
+| P1-3 | `DONE` | マイグレーション基盤 | `settings`（`schema_version`）と `fetch_log` を作成。バージョンごとの移行関数の枠組み。既存DBからの移行と再実行の冪等性。以後のテーブル追加は各フェーズで移行として足す。`test_migration.py` | P1-1 | `database.py` |
 | P1-4 | `TODO` | 設定モジュール | SPEC §2.1 の全項目の読み書き。**APIキーは `keyring`**、環境変数優先、マスク。**キーが DB とログに出ないことをテストで確認**。同期フォルダ配下の検出。`errors.py`（`UserFacingError`）。`test_settings.py` | P1-2 P1-3 | `settings.py` `errors.py` |
 | P1-5 | `TODO` | 共通HTTPクライアント | SPEC §4.1。間隔制御・直列化・UA・リトライ（**待機の下限はソースの最小間隔**）・中断フラグ対応の待機・キーのマスク。`test_sources_base.py` | P1-2 | `sources/base.py` |
 | P1-6 | `TODO` | ジョブ基盤 | SPEC §2.8.1。`start_job` / `job_status` / `cancel_job` / `active_jobs`、同種の多重起動拒否、`Event.wait` による中断。画面側のポーリングとヘッダのステータス欄（進捗・中断ボタン）。ダミージョブで動作確認。`test_jobs.py` | P1-4 | `jobs.py` `api.py` `js/jobs.js` `index.html` `style.css` |
@@ -206,6 +206,13 @@
 16. **長時間処理はジョブで実行し、HTTP 待ちの間に DB の書き込みロックを持たない**（SPEC §2.8.1）
 17. **自動更新は起動時の1回だけ。** 常駐ポーリングにしない。失敗してもダイアログで起動を妨げない（SPEC §2.8.2）
 18. **`margin_balances` は再取得できない。** マイグレーションで DROP しない（SPEC §3.1）
+
+### 実装メモ（後続タスク向け）
+
+- `settings` テーブルには `schema_version` も入っている。P1-4 の設定モジュールは、ユーザー設定の一覧から `schema_version` を除外すること
+- テーブルの追加は `app/database.py` の `MIGRATIONS` の末尾に `(バージョン, 関数)` を足す。既存の移行関数は書き換えない。
+  各移行は明示的なトランザクションで囲まれ、失敗時は DDL ごとロールバックされる（Python の sqlite3 は DDL を暗黙にコミットするため）
+- 開発環境の Python には `keyring` が未インストール（2026-09-20 時点。他の追加依存は導入済み）。P1-4 の前に `pip install -r requirements.txt` が必要
 
 ### 外部アクセスの作法
 
