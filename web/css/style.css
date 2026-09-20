@@ -15,6 +15,9 @@
   --down: #3ea6ff;
   --down-soft: rgba(62, 166, 255, 0.14);
   --neutral-soft: rgba(139, 151, 173, 0.14);
+  --event-supply: #fb923c;
+  --event-report: #7dd3fc;
+  --event-other: #8b97ad;
   --radius: 10px;
   --font: "Segoe UI", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
   --mono: "Cascadia Mono", "Consolas", "BIZ UDGothic", monospace;
@@ -285,6 +288,38 @@ main { padding: 20px 24px 40px; max-width: 1680px; margin: 0 auto; }
 .signal-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .signal-dot.buy { background: var(--up); }
 .signal-dot.sell { background: var(--down); }
+
+/* ---------- 開示イベント欄（P5-4 / P5-5） ---------- */
+.events-note { font-size: 12px; margin-top: 4px; }
+.event-list {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  max-height: 420px; overflow-y: auto;
+}
+.event-item {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 9px 4px; border-bottom: 1px solid rgba(36, 48, 73, 0.6);
+  font-size: 12.5px; cursor: pointer;
+  transition: background-color 0.2s;
+}
+.event-item:last-child { border-bottom: 0; }
+.event-item:hover { background: rgba(31, 41, 64, 0.5); }
+.event-row-1 { display: flex; align-items: center; gap: 8px; }
+.event-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.event-desc { color: var(--muted); }
+.event-meta { color: var(--faint); font-size: 11.5px; }
+.event-nomarker { color: var(--faint); font-size: 11.5px; }
+.event-open { margin-left: auto; }
+.event-badge {
+  display: inline-block; padding: 0 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  background: var(--neutral-soft); color: var(--muted);
+}
+.event-badge.category-report { background: rgba(125, 211, 252, 0.16); color: var(--event-report); }
+.event-badge.category-supply { background: rgba(251, 146, 60, 0.16); color: var(--event-supply); }
+.event-badge.category-other { background: rgba(139, 151, 173, 0.16); color: var(--event-other); }
+.event-badge.is-withdrawn { background: var(--up-soft); color: var(--up); }
+.event-item.is-withdrawn { opacity: 0.55; }
+.event-item.is-marker-highlight { background: rgba(139, 124, 246, 0.18); }
 
 /* ---------- export ---------- */
 .export-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }

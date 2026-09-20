@@ -111,6 +111,7 @@ def build(disclosure_list: dict, dates: list[str]) -> dict:
             "label": label,
             "doc_type_code": d.get("doc_type_code"),
             "description": d.get("description"),
+            "reason": d.get("reason"),
             "filer_name": d.get("filer_name"),
             "roles": d.get("roles", []),
             "withdrawal": d.get("withdrawal"),

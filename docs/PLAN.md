@@ -85,10 +85,10 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P4（開示の取得・突合・分類） |
-| **次にやること** | **P5-1・P5-2・P5-3 は完了。次は P5-4（イベント欄）。** SPEC §2.6。右カラム（テクニカル判定・シグナルと同じ列）に置き、`onVisibleRangeChange` で表示範囲に連動、行クリックで `scrollToDate`、提出日時・種別・概要・role・提出者名・「開く」（`open_disclosure`）、TDnet 対象外の注記、EDINET の出典と「本ツールが加工した」旨（SPEC §2.4.7）。その後 P5-5（マーカークリック。`onMarkerClick` は配線済みで、いまは `state.pendingMarkerId` に控えるだけ）。`dashboard()` に `events.counts` / `events.fetched_days` が入ったので、`updateDisclosureCounts()` の `get_disclosures` 呼び出しは P5-4 で整理してよい |
+| **次にやること** | **P5 は完了。次は P6-1（Gemini クライアント）。** SPEC §2.7・§9-4。`google-genai` のラッパ、`count_tokens`、**SDK の `retry_options` を設定しない**。**実物を1回採取して** `usage_metadata` のフィールド名・429 の詳細（`QuotaFailure.quotaId` / `RetryInfo`）・thinking 予算の指定方法を確認し §5 の #3 を解消する（外部アクセスを伴うのでメインが自分で行う。API キーはユーザーに取得してもらい資格情報ストアへ） |
 | **リポジトリ状態** | **`main` に `feature/p4-disclosures` をマージし、P4 完了時点まで push 済み**（`d8c805c`）。次の作業は `main` から新しいブランチを切って始める。※ P3 は `feature/p2-supply` の続きとしてコミットしてある（ブランチ名と中身がずれているが、マージ済みなので追わない）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **外部アクセスの消費** | 2026-09-20 に採取済み: karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回、**EDINET の利用規約ページ（閲覧）と `Edinetcode.zip` を各1回**。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらへはアクセスしない**。2026-09-20 に API キー取得後、**EDINET API v2 の `documents.json` を31回**（疎通確認1 + 実測30日分）。これは API の正規の使い方なので回数制限は無いが、1秒間隔は守ること。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` |
-| **動作確認** | 2026-09-20、P5-3 完了時点で `.venv\Scripts\python.exe -m pytest` は **658 passed / 15 skipped**。**合成データを入れた開発サーバーで開示マーカーを目視確認**（同日3件が「開示3件」にまとまる／土曜提出が翌月曜の足に寄る／取下げ・未来日・期間より前の開示はマーカーが出ない／`supply` は橙の上向き矢印 belowBar・`report` は水色の丸・`other` は灰の四角／シグナルのチップを OFF にしても開示マーカーが残り、その逆も成り立つ）。チップ設定の移行も確認（`{overlays:['signals']}` の古い保存値から読み込むと、開示だけが ON で足され、ユーザーが OFF にした移動平均は OFF のまま）。種データは `scratchpad/seed.py`、`.claude/launch.json` の `CHRONOS_DATA_DIR` は本セッションのスクラッチ領域に付け替えた（`auto_update_on_start=0` も種データに入れてある）。以前の記録: P4 完了時点で `.venv\Scripts\python.exe -m pytest` は **602 passed / 15 skipped**（skip は実通信テストのみ）。**開発サーバーで実 API を使って画面を確認済み**（開示を取得→トースト「開示 3日分を取得（うち書類あり 1日）・開示 3件を登録」、ダッシュボードの件数「開示 3件（有報・半期報 1／需給関連 0／その他 2）」、開示ゼロの銘柄で「この銘柄の開示はまだありません（EDINET は 3 日分取得済み）」、設定タブの接続テスト「EDINET に接続できました（2026-09-18 の書類 402 件）」、2回目の「開示を取得」が確定済みを除いて当日1日分だけになること）。**起動時の自動更新も実 API で確認**し、トーストが SPEC §2.8.2 の例どおりの並び「株価 取得済み／日証金 取得済み／EDINET 3日分・3件登録／空売り スキップ（設定オフ）」になることを確認。**EDINET API の疎通をユーザーの実キーで確認済み**（資格情報ストアから読めること、`documents.json` が 200 を返すこと）。実データ30日分5,123件でパーサを検証し、`issuerEdinetCode` が 350/360 のみ・`subjectEdinetCode` が 240〜320 のみに入ることを確認。P4-2 は外部アクセス無しで、ジョブ登録（`start_job('disclosures')` がキー未設定で `UserFacingError` を返し、キャッシュフォルダを作らないこと）と `CHRONOS_DATA_DIR` 配下に `edinet_cache/` が解決されることを一時フォルダで確認。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
+| **動作確認** | 2026-09-20、P5 完了時点で `.venv\Scripts\python.exe -m pytest` は **660 passed / 15 skipped**。**合成データを入れた開発サーバーでイベント欄を確認**（右カラムに「開示イベント」パネル、「表示範囲 9件 ／ 全 10件」、TDnet 対象外と EDINET 出典・加工主体の2行、提出日時＋種別バッジ＋概要＋提出事由＋`issuer` の提出者名、取下げ行が薄くバッジ付き、未来日の行に「株価の足がまだありません」、期間より前の1件は表示範囲外で出ない）。**表示範囲との連動**（「3ヶ月」で 5件に絞られる）、**マーカークリック**（臨報のマーカーを実際にクリックすると 2026-08-17 の行が強調される）、**行クリックでのスクロール**（2026-07-20 の行をクリックするとチャートが移動し、一覧が 2026-06-15 を含む並びに入れ替わる）を確認。`dashboard` を開いても `get_disclosures` が呼ばれなくなった（重複呼び出しの解消）ことを通信ログで確認。以前の記録: P5-3 完了時点で `.venv\Scripts\python.exe -m pytest` は **658 passed / 15 skipped**。**合成データを入れた開発サーバーで開示マーカーを目視確認**（同日3件が「開示3件」にまとまる／土曜提出が翌月曜の足に寄る／取下げ・未来日・期間より前の開示はマーカーが出ない／`supply` は橙の上向き矢印 belowBar・`report` は水色の丸・`other` は灰の四角／シグナルのチップを OFF にしても開示マーカーが残り、その逆も成り立つ）。チップ設定の移行も確認（`{overlays:['signals']}` の古い保存値から読み込むと、開示だけが ON で足され、ユーザーが OFF にした移動平均は OFF のまま）。種データは `scratchpad/seed.py`、`.claude/launch.json` の `CHRONOS_DATA_DIR` は本セッションのスクラッチ領域に付け替えた（`auto_update_on_start=0` も種データに入れてある）。以前の記録: P4 完了時点で `.venv\Scripts\python.exe -m pytest` は **602 passed / 15 skipped**（skip は実通信テストのみ）。**開発サーバーで実 API を使って画面を確認済み**（開示を取得→トースト「開示 3日分を取得（うち書類あり 1日）・開示 3件を登録」、ダッシュボードの件数「開示 3件（有報・半期報 1／需給関連 0／その他 2）」、開示ゼロの銘柄で「この銘柄の開示はまだありません（EDINET は 3 日分取得済み）」、設定タブの接続テスト「EDINET に接続できました（2026-09-18 の書類 402 件）」、2回目の「開示を取得」が確定済みを除いて当日1日分だけになること）。**起動時の自動更新も実 API で確認**し、トーストが SPEC §2.8.2 の例どおりの並び「株価 取得済み／日証金 取得済み／EDINET 3日分・3件登録／空売り スキップ（設定オフ）」になることを確認。**EDINET API の疎通をユーザーの実キーで確認済み**（資格情報ストアから読めること、`documents.json` が 200 を返すこと）。実データ30日分5,123件でパーサを検証し、`issuerEdinetCode` が 350/360 のみ・`subjectEdinetCode` が 240〜320 のみに入ることを確認。P4-2 は外部アクセス無しで、ジョブ登録（`start_job('disclosures')` がキー未設定で `UserFacingError` を返し、キャッシュフォルダを作らないこと）と `CHRONOS_DATA_DIR` 配下に `edinet_cache/` が解決されることを一時フォルダで確認。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
 
 ### フェーズの状態
 
@@ -99,7 +99,7 @@
 | P2 | 需給データの取得 | DONE |
 | P3 | 需給のチャート表示 | DONE |
 | P4 | 開示の取得・突合・分類 | DONE |
-| P5 | イベントマーカーとイベント欄 | TODO |
+| P5 | イベントマーカーとイベント欄 | DONE |
 | P6 | AI分析レポート | TODO |
 | P7 | 仕上げ | TODO |
 
@@ -173,8 +173,8 @@
 | P5-1 | `DONE` | イベント変換 | SPEC §2.5.3。**足のある日付への寄せ**（`prices.date` への二分探索。祝日表は持たない）、足がまだ無い場合、同日複数開示のまとめと優先順、昇順ソート。`dashboard` の `events`。`test_events.py` | P4-3 | `events.py` `service.py` |
 | P5-2 | `DONE` | チャートマーカー | シグナルと同一配列にマージして1回で `createSeriesMarkers`。配列構築を `overlays.has("signals")` の外へ。OVERLAYS に「開示」チップ。マーカーに `id` | P5-1 | `chart.js` |
 | P5-3 | `DONE` | チャートの連動用 API | `StockChart.render()` の戻り値に `onVisibleRangeChange(cb)` / `scrollToDate(date)` / `onMarkerClick(cb)` を追加。チップ切替による再生成をまたいで表示範囲と購読を引き継ぐ | P5-2 | `chart.js` `app.js` |
-| P5-4 | `TODO` | イベント欄 | SPEC §2.6。**右カラムに配置**、表示範囲連動、行クリックでスクロール、提出時刻・role・提出者名の表示、「開く」、TDnet 対象外の注記 | P5-3 P4-4 | `index.html` `app.js` `style.css` |
-| P5-5 | `TODO` | マーカークリック | `subscribeClick` の **`param.hoveredObjectId`** でマーカーを特定し、イベント欄の該当行へスクロール・強調 | P5-4 | `chart.js` `app.js` |
+| P5-4 | `DONE` | イベント欄 | SPEC §2.6。**右カラムに配置**、表示範囲連動、行クリックでスクロール、提出時刻・role・提出者名の表示、「開く」、TDnet 対象外の注記 | P5-3 P4-4 | `index.html` `app.js` `style.css` |
+| P5-5 | `DONE` | マーカークリック | `subscribeClick` の **`param.hoveredObjectId`** でマーカーを特定し、イベント欄の該当行へスクロール・強調 | P5-4 | `chart.js` `app.js` |
 
 ### P6 — AI分析レポート
 
@@ -206,6 +206,7 @@
 | 2 | 2026-09-20 | P0-4 | fable による設計レビュー（重大4・中12・軽微5・提案3）。一次情報と同梱ライブラリで事実確認し、土台のテスト 252 passed を確認。ユーザーが推奨案をすべて承認し、**起動時の自動更新**を追加要望。SPEC/PLAN を 1.1 に更新、RESEARCH/DESIGN に訂正表を追加。タスクは 38 → 43。別 PC への移行手順を SPEC §2.1.4 に追加。ユーザーが全体を承認し、コミットして `main` にマージ、`origin` に push（P0-5）。push 時に GitHub のメール保護で拒否されたため、未 push の4コミットの作者メールを noreply アドレスに書き換えた（内容は不変） |
 | 3 | 2026-09-20 | P0-5, P0-6, P1-1〜P1-8 | push（GitHub のメール保護で拒否されたため未 push の4コミットの作者メールを noreply に書き換え）。NOTICE・CLAUDE.md・`.gitignore`。P1（基盤）を完了: 改名、依存追加、マイグレーション（DDL を含めてロールバックできるよう明示トランザクション化）、設定（keyring）、共通HTTPクライアント、ジョブ基盤、起動時の自動更新（株価）、設定タブ。開発は `.venv` で行う。337 passed。レビューの NOTICE 著作権年の指摘は誤りと判明し撤回。`main` にマージして push 済み |
 | 8 | 2026-09-20 | P4-1〜P4-6 | **P4（開示）完了。** EDINET クライアント・日次キャッシュ・突合・分類・UI・自動更新。ユーザーが API キーを取得し、資格情報ストア（設定タブ）に保存（`.env.local` は OneDrive とリポジトリに平文が残るため採らなかった）。**キー取得後に実データ30日分・5,123件で検証し、仕様の誤りを2つ発見**: (1) 取下げは元の書類にフラグが立つのではなく `docID` と `parentDocID` しか持たない空のスタブが後日現れる（旧仕様のままでは取下げを一度も検出できなかった。`scan_cache` を昇順処理にして引き当てる形に修正）、(2) `edinet_cache` は1年で約 2.5MB で、見積り「数十MB」は1桁大きかった。突合規則（350/360 は `issuerEdinetCode`、240〜320 は `subjectEdinetCode`）は実データと一致することを確認。閲覧ページの URL を実 docID で確認し §9-7 を解消。**SPEC の未確定事項から EDINET 関連はすべて解消**。開発サーバーで実 API を使い、取得・件数表示・接続テスト・確定済み判定・自動更新のトーストを確認。メインのレビューで、開示0件の文言（未取得と「提出が無い」の取り違え）、確認ダイアログの件数と期間の食い違い、取下げ適用の冪等性、`pending_dates` の接続開閉（最大3650回）を修正。602 passed / 15 skipped。`main` にマージして push 済み |
+| 9 | 2026-09-20 | P5-1〜P5-5 | **P5（イベントマーカーとイベント欄）完了。** `app/events.py`（開示→イベントの純粋な変換）、開示マーカー（シグナルと同一配列にマージして1回で設定・「開示」チップ）、`render()` の連動用 API（`onVisibleRangeChange` / `scrollToDate` / `onMarkerClick` / 論理範囲の getter・setter）、右カラムのイベント欄、マーカークリックでの行強調。Sonnet のサブエージェント3本（Python / チャート / 画面）で並行実装した。メインの判断で、**提出日がチャートの最初の足より前の開示はマーカーを出さない**ことを決めて SPEC に追記。SPEC §2.6 が求める提出事由（`reason`）が payload に無かったので `list_for_symbol` と `events.build` に追加。既存ユーザーの localStorage に新チップが入らない問題を、保存値に `knownOverlays`/`knownPanes` を持たせる移行で解決。メインのレビューで、イベント欄の空表示の分岐（取得済みかどうかを `fetched_days` だけで判断していた）と提出者名が空のときの「提出者: 」だけの行を直した。合成データの開発サーバーで通しで目視確認。660 passed / 15 skipped |
 | 7 | 2026-09-20 | P3-1〜P3-4 | 需給のチャート表示。payload（`chart.short` / `chart.taisyaku`）、空売りの階段線（`LWC.LineType.WithSteps`）、貸借の2本を**連続区間ごとに別シリーズ**にして欠測で切る（§9-2 を解消）、データなし時のチップ無効化。メインのレビューで、空売りのシリーズを SPEC どおり疎な点列に戻した（サブエージェントは据え置き済みの密配列を渡していた。凡例だけ据え置く形に分離）。合成データを入れた開発サーバーで、階段・据え置き・欠測の切れ目・チップ無効化を目視確認。**P3 完了**。446 passed / 15 skipped |
 | 6 | 2026-09-20 | P2-6, P2-7 | 取得UI（一括取得は `short_all` ジョブ・事前に所要時間を提示して確認・403/429 で即中止・連続3回の失敗で中止）と、起動時の自動更新への組み込み（日証金は既定で実行、空売りは `auto_update_short` がオンのときだけ。自動更新側の打ち切りは株価と同じ**連続2回**）。メインのレビューで、API 名を SPEC の `estimate_short_all` に統一し、日証金の要約に `None` が出る分岐を直した。**P2 完了**。440 passed / 15 skipped |
 | 5 | 2026-09-20 | P2-1〜P2-5 | 実物を各1回採取（karauri `/6920/`・日証金 `zandaka.csv` `meigara.csv`）。**karauri の銘柄別ページは直近100件まで**と判明し、保存を全置換から「最小計算日以降だけの置換」に変更。**日証金 CSV は同一コードが市場ごとに複数行**あると判明し、東証の行だけを採用する規則を追加。`zandaka.csv` の全36列を SPEC に記載して §9-1 を解消。パーサ・保存・合計算出を Sonnet のサブエージェント2本（karauri / 日証金）で並行実装し、メインが差分をレビューして設定キー・日付書式の検証・浮動小数の丸めを修正。実物に対する構造テスト（`test_real_fixtures.py`）を追加。391 passed / 15 skipped |
@@ -335,6 +336,22 @@
   キャッシュが数年分に育つと登録が数秒延びる。気になったらジョブに移すこと
 - **テストは `tests/conftest.py` の autouse フィクスチャで `config.EDINET_CACHE_DIR` を一時フォルダに向けている。**
   向けないと `service.register()` のテストが開発機の `data/edinet_cache/` を読む
+
+### イベント（P5 で実装済み。P6・P7 はこれを使う）
+
+- `app/events.py` は **DB に触らない純粋な変換**。`build(disclosures.list_for_symbol(db, symbol), dates)` で
+  `{"items", "markers", "counts", "fetched_days"}` を返し、`dashboard()` の**トップレベル** `events` に入る
+  （`chart.short` / `chart.taisyaku` とは階層が違う）
+- **マーカーの日付は保存しない。** `marker_date()` が毎回 `prices.date` へ二分探索する。
+  足がまだ無い開示と、**提出日が最初の足より前の開示**は `marker_date` が `None`（マーカーを出さずイベント欄にだけ出す）
+- 取下げ（`withdrawal` が 0 でも None でもない）は `items` に残すがマーカーには出さない
+- `web/js/chart.js` の `render()` の戻り値: `setRange` / `scrollToDate` / `onVisibleRangeChange` /
+  `onMarkerClick` / `visibleLogicalRange` / `setVisibleLogicalRange` / `destroy`。
+  購読は `render()` ごとに閉じるので、`app.js` の `renderChart()` が毎回張り直している
+- チップ設定の保存値には `knownOverlays` / `knownPanes`（保存時点のチップ id）が入る。
+  **既定 ON のチップを追加したら、それだけが既存ユーザーにも足される**（ユーザーが OFF にしたものは復活しない）
+- ダッシュボードは `get_disclosures` を呼ばない（`events.counts` / `events.fetched_days` を使う）。
+  API 自体は残してある
 
 ### `dashboard()` の需給 payload（P3-1 で確定。P3-2〜P3-4 はこれ前提）
 

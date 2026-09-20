@@ -27,6 +27,7 @@ def _item(
     roles: list[str] | None = None,
     description: str | None = None,
     filer_name: str | None = None,
+    reason: str | None = None,
 ) -> dict:
     """`disclosures.list_for_symbol()` が返す1件分の item と同じ形を組み立てる（テスト用）。"""
     return {
@@ -35,6 +36,7 @@ def _item(
         "category": category,
         "doc_type_code": doc_type_code,
         "description": description,
+        "reason": reason,
         "filer_name": filer_name,
         "roles": roles if roles is not None else ["filer"],
         "withdrawal": withdrawal,
@@ -265,11 +267,18 @@ def test_build_markers_sorted_by_date_ascending():
     assert [m["date"] for m in result["markers"]] == ["2026-09-14", "2026-09-16", "2026-09-18"]
 
 
-def test_build_item_contains_no_reason_field():
-    """list_for_symbol がまだ reason を返さないので、items にも列を増やさない（提出事由は P5-4）。"""
+def test_build_item_includes_reason_field():
+    """list_for_symbol が返す reason（提出事由）を items にそのまま通す（SPEC §2.6）。"""
     dl = _list([_item("S1", "2026-09-16 09:00")])
     result = events.build(dl, _DATES)
-    assert "reason" not in result["items"][0]
+    assert result["items"][0]["reason"] is None
+
+
+def test_build_item_passes_through_reason_value():
+    """reason に値が入っている場合はそのまま通す（臨時報告書の提出事由）。"""
+    dl = _list([_item("S1", "2026-09-16 09:00", reason="事業内容の変更")])
+    result = events.build(dl, _DATES)
+    assert result["items"][0]["reason"] == "事業内容の変更"
 
 
 def test_build_item_shape_and_passthrough_fields():
@@ -296,6 +305,7 @@ def test_build_item_shape_and_passthrough_fields():
         "label": "大量保有",
         "doc_type_code": "350",
         "description": "大量保有報告書",
+        "reason": None,
         "filer_name": "テスト投資顧問",
         "roles": ["issuer"],
         "withdrawal": None,

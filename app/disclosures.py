@@ -696,12 +696,13 @@ def list_for_symbol(db, symbol: str) -> dict:
     書類ごとに1件へまとめて `roles` に配列で持つ。`items` は `submit_at` の降順（同じ `submit_at`
     なら `doc_id` の昇順で安定させる。`roles` の並びも `role` 順に固定する）。登録が1件も無ければ `counts` は全部0、`items` は空リスト。
     `fetched_days` は EDINET を取得済みの日数（0件表示の文言を分けるために返す）。
+    `reason`（提出事由。臨時報告書以外は基本 None）も各 item に含める（SPEC §2.6）。
     """
     with db.connect() as conn:
         rows = conn.execute(
             """
             SELECT d.doc_id, d.submit_at, d.category, d.doc_type_code, d.description,
-                   d.filer_name, d.withdrawal, l.role
+                   d.reason, d.filer_name, d.withdrawal, l.role
             FROM disclosures d
             JOIN disclosure_links l ON l.doc_id = d.doc_id
             WHERE l.symbol = ?
@@ -723,6 +724,7 @@ def list_for_symbol(db, symbol: str) -> dict:
                 "roles": [],
                 "doc_type_code": row["doc_type_code"],
                 "description": row["description"],
+                "reason": row["reason"],
                 "filer_name": row["filer_name"],
                 "withdrawal": row["withdrawal"],
             }

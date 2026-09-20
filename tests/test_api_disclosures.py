@@ -46,6 +46,7 @@ def _doc(
     description: str | None = "説明",
     filer_name: str | None = "テスト株式会社",
     withdrawal: int | None = None,
+    reason: str | None = None,
 ) -> dict:
     """`disclosures.save_documents` に渡す1件分の dict を組み立てる（テスト用の最小セット）。"""
     return {
@@ -59,7 +60,7 @@ def _doc(
         "form_code": None,
         "ordinance_code": None,
         "description": description,
-        "reason": None,
+        "reason": reason,
         "period_start": None,
         "period_end": None,
         "submit_at": submit_at,
@@ -111,6 +112,15 @@ def test_list_for_symbol_merges_multiple_roles_into_one_item(env):
     assert item["doc_id"] == "S1000001"
     assert set(item["roles"]) == {"subject", "filer"}
     assert result["counts"]["total"] == 1
+
+
+def test_list_for_symbol_includes_reason(env):
+    _, db, _ = env
+    doc = _doc("S1000001", "2026-09-01 09:00", reason="臨時報告書の提出事由")
+    disclosures.save_documents(db, [(doc, [("1234.T", "filer")])])
+
+    result = disclosures.list_for_symbol(db, "1234.T")
+    assert result["items"][0]["reason"] == "臨時報告書の提出事由"
 
 
 def test_list_for_symbol_items_are_sorted_by_submit_at_descending(env):
