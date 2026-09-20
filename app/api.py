@@ -169,6 +169,64 @@ class Api:
         return url
 
     @_response
+    def get_disclosure_text(self, doc_id: str):
+        """開示モーダル用に書類本文をテキストで返す（P9-2。SPEC §2.4.8）。
+
+        テキストにできない・大きすぎる・404 等のときは例外にせず `available=False` と
+        日本語の `reason` を返す（画面はこれを見て「EDINET で開く」に誘導する）。
+        401/403/429 はキーの誤りやレート制限の問題なので、`UserFacingError` として投げて
+        画面にエラー扱いで出す（_response が {"ok": False, "error": ...} にする）。
+        """
+        settings = self._require_settings()
+        api_key = settings.get_secret("edinet_api_key")
+        if not api_key:
+            raise UserFacingError("EDINET の API キーが設定されていません。設定タブで登録してください")
+
+        url = disclosures.viewer_url(doc_id)
+        client = edinet.make_client(settings)
+
+        def unavailable(reason: str, title: str | None = None) -> dict:
+            return {
+                "doc_id": doc_id,
+                "available": False,
+                "reason": reason,
+                "title": title,
+                "text": "",
+                "truncated": False,
+                "url": url,
+            }
+
+        try:
+            result = edinet.fetch_document_text(client, doc_id, api_key)
+        except edinet.DocumentTooLarge as exc:
+            mb = exc.size_bytes / (1024 * 1024)
+            return unavailable(
+                f"書類が大きいため本文を表示しません（約 {mb:.1f} MB）。EDINET の閲覧ページで確認してください。"
+            )
+        except HttpError as exc:
+            if exc.status in (401, 403, 429):
+                raise UserFacingError(
+                    f"EDINET に拒否されました（HTTP {exc.status}）。API キーやアクセス回数を確認してください"
+                ) from None
+            return unavailable(f"本文を取得できませんでした（{exc}）。EDINET の閲覧ページで確認してください。")
+
+        if not result["text"]:
+            return unavailable(
+                "この書類は本文をテキストにできません。EDINET の閲覧ページで確認してください。",
+                title=result["title"],
+            )
+
+        return {
+            "doc_id": doc_id,
+            "available": True,
+            "reason": None,
+            "title": result["title"],
+            "text": result["text"],
+            "truncated": result["truncated"],
+            "url": url,
+        }
+
+    @_response
     def test_connection(self, target: str):
         """データソースへの疎通確認（SPEC §2.1.3）。"""
         if target == "edinet":

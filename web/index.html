@@ -355,6 +355,15 @@
     </section>
   </main>
 
+  <!-- 開示モーダル（P9-3）。中身は JS で描画する。<dialog> なので Esc / ::backdrop クリックで閉じる -->
+  <dialog class="modal" id="disclosure-modal">
+    <div class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button class="btn btn-sm modal-close" id="modal-close" aria-label="閉じる">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </dialog>
+
   <div class="busy" id="busy" hidden>
     <div class="busy-box"><span class="spinner"></span><span id="busy-text">処理中…</span></div>
   </div>

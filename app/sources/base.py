@@ -38,6 +38,18 @@ class HttpError(UserFacingError):
         self.status = status
 
 
+class ResponseTooLarge(UserFacingError):
+    """`get(max_bytes=...)` を超えたため、本体を読まずに中止した（P9-1。SPEC §2.4.8）。
+
+    呼び出し側（`app.sources.edinet`）で捕まえて、ドメイン固有のメッセージに直すことを想定する。
+    """
+
+    def __init__(self, size_bytes: int, max_bytes: int):
+        super().__init__(f"レスポンスが大きすぎます（{size_bytes} バイト > 上限 {max_bytes} バイト）")
+        self.size_bytes = size_bytes
+        self.max_bytes = max_bytes
+
+
 def mask_secrets(text: str) -> str:
     """URL や例外メッセージに含まれる API キーの値を *** にする。"""
     return _SENSITIVE_RE.sub(lambda m: f"{m.group(1)}=***", text)
@@ -88,17 +100,37 @@ class HttpClient:
     def min_interval(self) -> float:
         return float(self._min_interval() if callable(self._min_interval) else self._min_interval)
 
-    def get(self, url: str, params: dict | None = None, cancel: threading.Event | None = None) -> requests.Response:
-        """2xx のレスポンスを返す。それ以外は HttpError、中断されたら Cancelled。"""
+    def get(
+        self,
+        url: str,
+        params: dict | None = None,
+        cancel: threading.Event | None = None,
+        read_timeout: float | None = None,
+        max_bytes: int | None = None,
+    ) -> requests.Response:
+        """2xx のレスポンスを返す。それ以外は HttpError、中断されたら Cancelled。
+
+        `read_timeout` は読み取りタイムアウト（秒）をこの呼び出しだけ差し替える（既定は `TIMEOUT`）。
+        大きな書類 ZIP など、一覧取得より時間のかかる用途向け（SPEC §2.4.8）。
+
+        `max_bytes` を渡すと、`Content-Length` がこれを超える場合は本体を読まずに `ResponseTooLarge`
+        を投げる。ヘッダを確認するためだけに `stream=True` にする（本体はまだ読まれていない）。
+        `Content-Length` が無いレスポンスは判別できないのでそのまま通す。
+        どちらの引数も省略時は今までどおりの挙動（他ソースの呼び出しに影響しない）。
+        """
         shown = mask_secrets(f"{url}?{urlencode(params)}" if params else url)
         headers = {"User-Agent": self._agent() if callable(self._agent) else self._agent}
+        timeout = (TIMEOUT[0], read_timeout) if read_timeout is not None else TIMEOUT
 
         self._acquire(cancel)  # 同じソースへは1本ずつ
         try:
             for attempt in range(MAX_RETRIES + 1):
                 self._wait_turn(cancel)
+                get_kwargs = {"params": params, "headers": headers, "timeout": timeout}
+                if max_bytes is not None:
+                    get_kwargs["stream"] = True
                 try:
-                    response = self._session.get(url, params=params, headers=headers, timeout=TIMEOUT)
+                    response = self._session.get(url, **get_kwargs)
                 except requests.RequestException as exc:
                     self._state.next_allowed = self._clock() + self.min_interval
                     log.warning("%s GET %s failed: %s", self.source, shown, mask_secrets(str(exc)))
@@ -113,11 +145,26 @@ class HttpClient:
                     continue
                 self._state.next_allowed = self._clock() + self.min_interval
                 if 200 <= status < 300:
+                    if max_bytes is not None:
+                        self._enforce_max_bytes(response, max_bytes)
                     return response
                 raise HttpError(f"{self.source} がエラーを返しました（HTTP {status}）", status)
         finally:
             self._state.lock.release()
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _enforce_max_bytes(response: requests.Response, max_bytes: int) -> None:
+        content_length = response.headers.get("Content-Length")
+        if content_length is None:
+            return
+        try:
+            size = int(content_length)
+        except ValueError:
+            return
+        if size > max_bytes:
+            response.close()  # 本体を読まずに接続を返す
+            raise ResponseTooLarge(size, max_bytes)
 
     def _acquire(self, cancel: threading.Event | None) -> None:
         """ソースのロックを取る。順番待ちの間も中断に応じる。"""

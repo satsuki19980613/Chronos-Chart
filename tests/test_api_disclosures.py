@@ -345,6 +345,157 @@ def test_test_connection_unknown_target(env):
     assert "bogus" in result["error"]
 
 
+# ---------------------------------------------------------------------------
+# Api.get_disclosure_text（P9-2。SPEC §2.4.8）
+# ---------------------------------------------------------------------------
+_VIEWER_URL = "https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?S100YMVN,,2"
+
+
+def _with_api_key(settings, monkeypatch, key="FAKEKEY123"):
+    monkeypatch.setattr(settings, "get_secret", lambda k: key if k == "edinet_api_key" else "")
+
+
+def test_get_disclosure_text_happy_path(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    monkeypatch.setattr(
+        edinet,
+        "fetch_document_text",
+        lambda client, doc_id, api_key, cancel=None: {"title": "臨時報告書", "text": "本文です", "truncated": False},
+    )
+
+    result = assert_json_ok(api.get_disclosure_text("S100YMVN"))
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["doc_id"] == "S100YMVN"
+    assert data["available"] is True
+    assert data["reason"] is None
+    assert data["title"] == "臨時報告書"
+    assert data["text"] == "本文です"
+    assert data["truncated"] is False
+    assert data["url"] == _VIEWER_URL
+
+
+def test_get_disclosure_text_empty_text_is_unavailable_not_an_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    monkeypatch.setattr(
+        edinet,
+        "fetch_document_text",
+        lambda client, doc_id, api_key, cancel=None: {"title": None, "text": "", "truncated": False},
+    )
+
+    result = assert_json_ok(api.get_disclosure_text("S100YMVN"))
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["available"] is False
+    assert data["reason"]
+    assert "EDINET" in data["reason"]
+    assert data["url"] == _VIEWER_URL
+
+
+def test_get_disclosure_text_too_large_is_unavailable_not_an_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    def raise_too_large(client, doc_id, api_key, cancel=None):
+        raise edinet.DocumentTooLarge(25 * 1024 * 1024)
+
+    monkeypatch.setattr(edinet, "fetch_document_text", raise_too_large)
+
+    result = assert_json_ok(api.get_disclosure_text("S100YMVN"))
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["available"] is False
+    assert "MB" in data["reason"]
+    assert data["url"] == _VIEWER_URL
+
+
+def test_get_disclosure_text_404_is_unavailable_not_an_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    def raise_404(client, doc_id, api_key, cancel=None):
+        raise HttpError("edinet がエラーを返しました（HTTP 404）", status=404)
+
+    monkeypatch.setattr(edinet, "fetch_document_text", raise_404)
+
+    result = assert_json_ok(api.get_disclosure_text("S100YMVN"))
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["available"] is False
+    assert "404" in data["reason"]
+    assert data["url"] == _VIEWER_URL
+
+
+def test_get_disclosure_text_timeout_is_unavailable_not_an_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    def raise_timeout(client, doc_id, api_key, cancel=None):
+        raise HttpError("edinet に接続できませんでした（ReadTimeout）")
+
+    monkeypatch.setattr(edinet, "fetch_document_text", raise_timeout)
+
+    result = assert_json_ok(api.get_disclosure_text("S100YMVN"))
+    assert result["ok"] is True
+    assert result["data"]["available"] is False
+
+
+def test_get_disclosure_text_401_raises_user_facing_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    def raise_401(client, doc_id, api_key, cancel=None):
+        raise HttpError("edinet がエラーを返しました（HTTP 401）", status=401)
+
+    monkeypatch.setattr(edinet, "fetch_document_text", raise_401)
+
+    result = assert_error(api.get_disclosure_text("S100YMVN"))
+    assert "401" in result["error"]
+
+
+def test_get_disclosure_text_403_raises_user_facing_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    def raise_403(client, doc_id, api_key, cancel=None):
+        raise HttpError("edinet がエラーを返しました（HTTP 403）", status=403)
+
+    monkeypatch.setattr(edinet, "fetch_document_text", raise_403)
+
+    result = assert_error(api.get_disclosure_text("S100YMVN"))
+    assert "403" in result["error"]
+
+
+def test_get_disclosure_text_429_raises_user_facing_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+
+    def raise_429(client, doc_id, api_key, cancel=None):
+        raise HttpError("edinet がエラーを返しました（HTTP 429）", status=429)
+
+    monkeypatch.setattr(edinet, "fetch_document_text", raise_429)
+
+    result = assert_error(api.get_disclosure_text("S100YMVN"))
+    assert "429" in result["error"]
+
+
+def test_get_disclosure_text_missing_api_key_raises_user_facing_error(env):
+    api, db, settings = env  # settings は keyring_backend=object() で API キー未設定
+    result = assert_error(api.get_disclosure_text("S100YMVN"))
+    assert "設定" in result["error"]
+
+
+def test_get_disclosure_text_invalid_doc_id_returns_error(env, monkeypatch):
+    api, db, settings = env
+    _with_api_key(settings, monkeypatch)
+    result = assert_error(api.get_disclosure_text("../evil"))
+    assert result["error"]
+
+
 def test_test_connection_without_settings_configured(tmp_path):
     db = Database(tmp_path / "nosettings.db")
     db.init_schema()
