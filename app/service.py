@@ -13,6 +13,7 @@ import pandas as pd
 
 from . import ai_export
 from . import disclosures
+from . import events
 from . import indicators as ind
 from .config import INITIAL_PERIOD, OUTPUT_DIR
 from .csv_export import csv_paths, export_csv, remove_csv
@@ -167,6 +168,8 @@ class StockService:
         with self.db.connect() as conn:
             short = _short_points(conn, symbol, dates)
             taisyaku = _taisyaku_points(conn, symbol, dates)
+        # list_for_symbol は自前で接続を開くので、上の接続ブロックを閉じてから呼ぶ
+        disclosure_list = disclosures.list_for_symbol(self.db, symbol)
 
         return {
             "stock": stock,
@@ -189,6 +192,7 @@ class StockService:
             },
             "table": _table(prices, indicators, limit=60),
             "csv": {k: str(p) for k, p in paths.items()},
+            "events": events.build(disclosure_list, dates),
         }
 
 
