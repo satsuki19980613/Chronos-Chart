@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -696,7 +697,7 @@ def test_scan_cache_matches_classifies_and_saves_per_fixture(tmp_path):
 
     result = disclosures.scan_cache(db, base_dir=tmp_path)
 
-    assert result == {"dates": 1, "documents": 6, "links": 7}
+    assert result == {"dates": 1, "documents": 6, "links": 7, "withdrawn": 1}
 
     with db.connect() as conn:
         doc_ids = {row["doc_id"] for row in conn.execute("SELECT doc_id FROM disclosures")}
@@ -765,7 +766,11 @@ def test_scan_cache_backfills_newly_registered_stock_from_past_cache(tmp_path):
     _register_stock(db, "4444.T", "4444", "架空電機", edinet_code="E90003")  # 後から登録
     result = disclosures.scan_cache(db, symbols=["4444.T"], base_dir=tmp_path)
 
-    assert result == {"dates": 1, "documents": 1, "links": 1}
+    # 取下げは1回目の走査で反映済みなので、2回目は数えない（同じ値の行は更新しない）
+    assert result == {"dates": 1, "documents": 1, "links": 1, "withdrawn": 0}
+    with db.connect() as conn:
+        still = conn.execute("SELECT withdrawal FROM disclosures WHERE doc_id = 'S9000006'").fetchone()
+    assert still["withdrawal"] == 1  # 取下げ自体は消えていない
     with db.connect() as conn:
         row = conn.execute("SELECT doc_id, role FROM disclosure_links WHERE symbol = '4444.T'").fetchone()
     assert (row["doc_id"], row["role"]) == ("S9000005", "filer")
@@ -791,11 +796,204 @@ def test_scan_cache_noop_when_no_stocks_or_no_dates(tmp_path):
     edinet.write_cache("2026-06-25", _load_fixture(), base_dir=tmp_path)
 
     # 登録銘柄が0件
-    assert disclosures.scan_cache(db, base_dir=tmp_path) == {"dates": 0, "documents": 0, "links": 0}
+    assert disclosures.scan_cache(db, base_dir=tmp_path) == {
+        "dates": 0,
+        "documents": 0,
+        "links": 0,
+        "withdrawn": 0,
+    }
 
     _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
     # 対象日が0件
-    assert disclosures.scan_cache(db, dates=[], base_dir=tmp_path) == {"dates": 0, "documents": 0, "links": 0}
+    assert disclosures.scan_cache(db, dates=[], base_dir=tmp_path) == {
+        "dates": 0,
+        "documents": 0,
+        "links": 0,
+        "withdrawn": 0,
+    }
+
+
+# ---------- 取下げスタブ（SPEC §2.4.6） ----------
+
+
+def _full_doc(doc_id: str, *, edinet_code: str = "E90001", sec_code: str = "11110") -> dict:
+    """突合・保存できる完全な書類（有報）を1件作る。"""
+    return {
+        "docID": doc_id,
+        "edinetCode": edinet_code,
+        "secCode": sec_code,
+        "filerName": "架空製作所株式会社",
+        "docTypeCode": "120",
+        "formCode": "030000",
+        "ordinanceCode": "010",
+        "submitDateTime": "2026-08-01 09:00",
+        "withdrawalStatus": "0",
+        "disclosureStatus": "0",
+    }
+
+
+def _withdrawal_stub(
+    doc_id: str,
+    *,
+    withdrawal_status: str,
+    parent_doc_id: str | None = None,
+    submit_at: str | None = None,
+) -> dict:
+    """実物の取下げスタブを模す（docTypeCode 等は一切持たない。SPEC §2.4.6）。"""
+    stub: dict = {
+        "docID": doc_id,
+        "withdrawalStatus": withdrawal_status,
+        "docInfoEditStatus": "0",
+        "disclosureStatus": "0",
+    }
+    if parent_doc_id is not None:
+        stub["parentDocID"] = parent_doc_id
+    if submit_at is not None:
+        stub["submitDateTime"] = submit_at
+    return stub
+
+
+def test_scan_cache_withdrawal_stub_updates_parent_by_parent_doc_id(tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache(
+        "2026-08-01",
+        {
+            "metadata": {},
+            "results": [
+                _full_doc("S9100001"),
+                _withdrawal_stub("S9100099", withdrawal_status="1", parent_doc_id="S9100001"),
+            ],
+        },
+        base_dir=tmp_path,
+    )
+
+    result = disclosures.scan_cache(db, base_dir=tmp_path)
+
+    assert result["withdrawn"] == 1
+    with db.connect() as conn:
+        row = conn.execute("SELECT withdrawal FROM disclosures WHERE doc_id = ?", ("S9100001",)).fetchone()
+    assert row["withdrawal"] == 1
+
+
+def test_scan_cache_withdrawal_stub_on_later_date_updates_earlier_saved_document(tmp_path):
+    """実物と同じ形: 元の書類と取下げスタブが別々の日付のキャッシュに分かれて現れる。"""
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache("2026-08-01", {"metadata": {}, "results": [_full_doc("S9100002")]}, base_dir=tmp_path)
+    edinet.write_cache(
+        "2026-08-05",
+        {
+            "metadata": {},
+            "results": [_withdrawal_stub("S9100098", withdrawal_status="1", parent_doc_id="S9100002")],
+        },
+        base_dir=tmp_path,
+    )
+
+    result = disclosures.scan_cache(db, dates=["2026-08-01", "2026-08-05"], base_dir=tmp_path)
+
+    assert result["withdrawn"] == 1
+    with db.connect() as conn:
+        row = conn.execute("SELECT withdrawal FROM disclosures WHERE doc_id = ?", ("S9100002",)).fetchone()
+    assert row["withdrawal"] == 1
+
+
+def test_scan_cache_sorts_dates_ascending_even_when_given_descending(tmp_path):
+    """`disclosures_job` は新しい日付から順に `dates` を渡すので、降順で渡されても正しく処理できる必要がある。"""
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache("2026-08-01", {"metadata": {}, "results": [_full_doc("S9100003")]}, base_dir=tmp_path)
+    edinet.write_cache(
+        "2026-08-05",
+        {
+            "metadata": {},
+            "results": [_withdrawal_stub("S9100097", withdrawal_status="1", parent_doc_id="S9100003")],
+        },
+        base_dir=tmp_path,
+    )
+
+    # 降順で渡す
+    result = disclosures.scan_cache(db, dates=["2026-08-05", "2026-08-01"], base_dir=tmp_path)
+
+    assert result["withdrawn"] == 1
+    with db.connect() as conn:
+        row = conn.execute("SELECT withdrawal FROM disclosures WHERE doc_id = ?", ("S9100003",)).fetchone()
+    assert row["withdrawal"] == 1
+
+
+def test_scan_cache_withdrawal_status_2_matches_by_own_doc_id(tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache("2026-08-01", {"metadata": {}, "results": [_full_doc("S9100004")]}, base_dir=tmp_path)
+    edinet.write_cache(
+        "2026-08-05",
+        {"metadata": {}, "results": [_withdrawal_stub("S9100004", withdrawal_status="2")]},
+        base_dir=tmp_path,
+    )
+
+    result = disclosures.scan_cache(db, dates=["2026-08-01", "2026-08-05"], base_dir=tmp_path)
+
+    assert result["withdrawn"] == 1
+    with db.connect() as conn:
+        row = conn.execute("SELECT withdrawal FROM disclosures WHERE doc_id = ?", ("S9100004",)).fetchone()
+    assert row["withdrawal"] == 2
+
+
+def test_scan_cache_unmatched_withdrawal_stub_is_a_noop(tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache(
+        "2026-08-01",
+        {
+            "metadata": {},
+            "results": [_withdrawal_stub("S9199999", withdrawal_status="1", parent_doc_id="S9199998")],
+        },
+        base_dir=tmp_path,
+    )
+
+    result = disclosures.scan_cache(db, base_dir=tmp_path)
+
+    assert result == {"dates": 1, "documents": 0, "links": 0, "withdrawn": 0}
+
+
+def test_scan_cache_withdrawal_stub_does_not_log_missing_field_warning(tmp_path, caplog):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache(
+        "2026-08-01",
+        {
+            "metadata": {},
+            "results": [_withdrawal_stub("S9199997", withdrawal_status="1", parent_doc_id="S9199996")],
+        },
+        base_dir=tmp_path,
+    )
+
+    with caplog.at_level(logging.WARNING, logger=disclosures.log.name):
+        disclosures.scan_cache(db, base_dir=tmp_path)
+
+    assert "必須項目が欠けている" not in caplog.text
+
+
+def test_scan_cache_withdrawn_count_in_return_value(tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache(
+        "2026-08-01",
+        {
+            "metadata": {},
+            "results": [
+                _full_doc("S9100005"),
+                _full_doc("S9100006"),
+                _withdrawal_stub("S9100091", withdrawal_status="1", parent_doc_id="S9100005"),
+                _withdrawal_stub("S9100092", withdrawal_status="1", parent_doc_id="S9100006"),
+            ],
+        },
+        base_dir=tmp_path,
+    )
+
+    result = disclosures.scan_cache(db, base_dir=tmp_path)
+
+    assert result["withdrawn"] == 2
 
 
 # ---------- cleanup_orphans ----------

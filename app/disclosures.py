@@ -387,10 +387,34 @@ def _clean_int(value) -> int | None:
         return None
 
 
+def is_withdrawal_stub(raw: dict) -> bool:
+    """取下げスタブか判定する（SPEC §2.4.6）。
+
+    実データでは、取下げは元の書類の行にフラグが立つのではなく、`docID` と `withdrawalStatus`
+    （`"1"` = 取下げ書類、`"2"` = 取り下げられた書類）以外のメタデータがすべて欠けた
+    別レコードとして後日の日付に現れる。`docTypeCode` 等が欠けていて `parse_document` が
+    None を返す行のうち、`docID` があり `withdrawalStatus` が 0 でも空でもないものがこれに当たる。
+    """
+    doc_id = _clean_str(raw.get("docID"))
+    withdrawal = _clean_int(raw.get("withdrawalStatus"))
+    return bool(doc_id) and bool(withdrawal)
+
+
+def _withdrawal_stub_target(raw: dict) -> dict:
+    """取下げスタブから引き当て情報を取り出す（`is_withdrawal_stub` が True の行にのみ呼ぶ）。"""
+    return {
+        "doc_id": _clean_str(raw.get("docID")),
+        "parent_doc_id": _clean_str(raw.get("parentDocID")),
+        "withdrawal": _clean_int(raw.get("withdrawalStatus")),
+    }
+
+
 def parse_document(raw: dict) -> dict | None:
     """`documents.json` の `results` の1要素を `disclosures` の1行にする（SPEC §2.4.3・§2.4.6）。
 
     `doc_id` / `doc_type_code` / `submit_at`（NOT NULL 列）のいずれかが欠けていれば None を返す。
+    取下げスタブ（`is_withdrawal_stub`）は正常なレコードなので、欠落の warning ログは出さない
+    （呼び出し側 `scan_cache` がこれを拾って `apply_withdrawals` に渡す）。
     """
     doc: dict = {}
     for json_key, column in _STRING_FIELDS.items():
@@ -400,11 +424,12 @@ def parse_document(raw: dict) -> dict | None:
 
     missing = [column for column in _REQUIRED_COLUMNS if not doc.get(column)]
     if missing:
-        log.warning(
-            "EDINET 書類の必須項目が欠けているため捨てます（欠けている列: %s、docID=%r）",
-            "、".join(missing),
-            raw.get("docID"),
-        )
+        if not is_withdrawal_stub(raw):
+            log.warning(
+                "EDINET 書類の必須項目が欠けているため捨てます（欠けている列: %s、docID=%r）",
+                "、".join(missing),
+                raw.get("docID"),
+            )
         return None
 
     doc["category"] = classify(doc["doc_type_code"])
@@ -533,6 +558,36 @@ def save_documents(db, items: list[tuple[dict, list[tuple[str, str]]]]) -> dict:
     return {"documents": saved_documents, "links": saved_links}
 
 
+def apply_withdrawals(db, stubs: list[dict]) -> int:
+    """取下げスタブを `disclosures` に適用する（SPEC §2.4.6）。
+
+    スタブ1件ごとに、自分の `doc_id` と `parent_doc_id`（あれば）の両方を候補にして
+    `UPDATE disclosures SET withdrawal = ? WHERE doc_id IN (候補...)` する
+    （`withdrawalStatus` が `"1"` なら本来 `parent_doc_id` が対象、`"2"` ならスタブ自身が対象だが、
+    実データではどちらの形で来るか判別できないため両方を見る）。
+    候補がどの登録済み書類にも一致しなければ何もしない（登録銘柄に関係しない取下げは持つ必要がない）。
+    **すでに同じ値が入っている行は更新しない**ので、戻り値は「今回あらたに取下げにした行数」になる
+    （再走査のたびに同じ行を書き直して件数に数えると、ジョブの報告が毎回0にならない）。
+    """
+    if not stubs:
+        return 0
+
+    updated = 0
+    with db.write() as conn:
+        for stub in stubs:
+            candidates = {doc_id for doc_id in (stub["doc_id"], stub.get("parent_doc_id")) if doc_id}
+            if not candidates:
+                continue
+            placeholders = ", ".join("?" for _ in candidates)
+            cursor = conn.execute(
+                f"UPDATE disclosures SET withdrawal = ? "
+                f"WHERE doc_id IN ({placeholders}) AND (withdrawal IS NULL OR withdrawal != ?)",
+                (stub["withdrawal"], *candidates, stub["withdrawal"]),
+            )
+            updated += cursor.rowcount
+    return updated
+
+
 def scan_cache(
     db,
     *,
@@ -543,32 +598,40 @@ def scan_cache(
     """日次キャッシュを走査して `disclosures` / `disclosure_links` を埋める（API は呼ばない。SPEC §2.4.2）。
 
     `symbols` 省略時は登録銘柄すべて、`dates` 省略時は `edinet.cached_dates()` すべて。
-    登録銘柄・対象日のどちらかが0件なら何もしない。1日ぶんずつ「キャッシュを読む→短いトランザクションで
-    保存」を繰り返す（CLAUDE.md 不変条件10: 長時間 DB の書き込みロックを持たない）。
+    登録銘柄・対象日のどちらかが0件なら何もしない。**日付は昇順に並べ替えてから処理する**
+    （呼び出し側が降順で渡すことがあるが、取下げスタブより元の書類が先に保存されていないと
+    引き当てられないため。SPEC §2.4.6）。1日ぶんずつ「キャッシュを読む→書類を保存→同じ日の
+    取下げスタブを適用」を短いトランザクションで繰り返す
+    （CLAUDE.md 不変条件10: 長時間 DB の書き込みロックを持たない）。
     壊れている・存在しないキャッシュの日付は読み飛ばして次へ進む（例外にしない）。
-    戻り値は `{"dates": 走査した日数, "documents": 保存した書類数, "links": 保存した関係数}`。
+    戻り値は `{"dates": 走査した日数, "documents": 保存した書類数, "links": 保存した関係数,
+    "withdrawn": 取下げを反映した行数}`。
     """
     syms = symbols if symbols is not None else [row["symbol"] for row in db.list_stocks()]
     target_dates = dates if dates is not None else edinet.cached_dates(base_dir=base_dir)
 
     if not syms or not target_dates:
-        return {"dates": 0, "documents": 0, "links": 0}
+        return {"dates": 0, "documents": 0, "links": 0, "withdrawn": 0}
 
     targets = link_targets(db, syms)  # 日付ごとに引き直さない
 
     scanned_dates = 0
     total_documents = 0
     total_links = 0
-    for date in target_dates:
+    total_withdrawn = 0
+    for date in sorted(target_dates):
         data = edinet.read_cache(date, base_dir=base_dir)
         if data is None:
             continue  # 無い・壊れているキャッシュは無いものとして扱う（SPEC §2.4.2）
         scanned_dates += 1
 
         items = []
+        stubs = []
         for raw in data.get("results") or []:
             doc = parse_document(raw)
             if doc is None:
+                if is_withdrawal_stub(raw):
+                    stubs.append(_withdrawal_stub_target(raw))
                 continue
             roles = match_roles(doc, targets)
             items.append((doc, roles))
@@ -577,7 +640,16 @@ def scan_cache(
         total_documents += result["documents"]
         total_links += result["links"]
 
-    return {"dates": scanned_dates, "documents": total_documents, "links": total_links}
+        # 同じ日の中でも、その日の書類を保存してから取下げスタブを適用する
+        # （同じ日に元の書類と取下げが両方入っていることがあり得るため。SPEC §2.4.6）
+        total_withdrawn += apply_withdrawals(db, stubs)
+
+    return {
+        "dates": scanned_dates,
+        "documents": total_documents,
+        "links": total_links,
+        "withdrawn": total_withdrawn,
+    }
 
 
 def cleanup_orphans(db) -> int:
