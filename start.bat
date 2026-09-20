@@ -36,7 +36,7 @@ if errorlevel 1 (
 )
 
 rem ---- 必要なライブラリがなければインストール ----
-"%PY%" -c "import webview, yfinance, pandas, numpy" >nul 2>nul
+"%PY%" -c "import webview, yfinance, pandas, numpy, requests, bs4, lxml, keyring, tzdata, google.genai, pydantic, jinja2" >nul 2>nul
 if errorlevel 1 (
     echo 必要なライブラリをインストールしています...
     "%PY%" -m pip install -r requirements.txt
