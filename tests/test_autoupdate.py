@@ -96,7 +96,7 @@ def test_updates_every_stock_in_order_with_pause(env):
     assert ctx.waits == [autoupdate.PRICE_PAUSE_SEC] * 2  # 銘柄間だけ待つ（先頭の前は待たない）
     assert result["updated_symbols"] == ["1301.T", "7203.T", "9984.T"]
     assert result["summary"] == (
-        f"株価 3件更新／日証金 {TAISYAKU_DATE} 分を取得（3銘柄）／空売り スキップ（設定オフ）"
+        f"株価 3件更新／日証金 {TAISYAKU_DATE} 分を取得（3銘柄）／EDINET スキップ（API キー未設定）／空売り スキップ（設定オフ）"
     )
     assert result["failed"] is False
     assert result["changed"] is True
@@ -162,7 +162,7 @@ def test_everything_fresh_means_no_requests(env):
     result = AutoUpdater(db, service, settings, now=lambda: now).run(ctx, {})
     assert service.calls == []
     assert ctx.waits == []
-    assert result["summary"] == "株価 取得済み／日証金 取得済み／空売り スキップ（設定オフ）"
+    assert result["summary"] == "株価 取得済み／日証金 取得済み／EDINET スキップ（API キー未設定）／空売り スキップ（設定オフ）"
     assert result["updated_symbols"] == []
     assert result["changed"] is False  # 画面は何も知らせない
 
@@ -188,7 +188,7 @@ def test_one_failing_stock_does_not_stop_the_rest(env):
     assert result["updated_symbols"] == ["1301.T", "7203.T", "9984.T"]
     assert result["failed"] is True
     assert result["summary"] == (
-        f"株価 2件更新・1件失敗／日証金 {TAISYAKU_DATE} 分を取得（3銘柄）／空売り スキップ（設定オフ）"
+        f"株価 2件更新・1件失敗／日証金 {TAISYAKU_DATE} 分を取得（3銘柄）／EDINET スキップ（API キー未設定）／空売り スキップ（設定オフ）"
     )
     assert "1301.T" in result["steps"]["prices"]["errors"][0]
 
@@ -253,7 +253,7 @@ def test_runs_as_a_job(env, monkeypatch):
     final = manager.join(manager.start("auto_update")["id"], WAIT)
     assert final["state"] == "done"
     assert final["result"]["summary"] == (
-        f"株価 3件更新／日証金 {TAISYAKU_DATE} 分を取得（3銘柄）／空売り スキップ（設定オフ）"
+        f"株価 3件更新／日証金 {TAISYAKU_DATE} 分を取得（3銘柄）／EDINET スキップ（API キー未設定）／空売り スキップ（設定オフ）"
     )
 
 
@@ -512,3 +512,221 @@ def test_service_update_and_register_record_the_fetch(tmp_path):
         conn.execute("DELETE FROM fetch_log")
     service.update("7203.T")
     assert db.get_fetch("yahoo", "7203.T")["result"] == "ok"
+
+
+# ---------- 開示（EDINET。P4-5）----------
+EDINET_API_KEY_ENV = "CHRONOS_EDINET_API_KEY"
+
+
+def _job_result(**overrides):
+    """disclosures.disclosures_job が返す辞書のフェイク（既定は「対象0日・登録0件」相当）。"""
+    result = {
+        "days": 0,
+        "with_documents": [],
+        "empty": [],
+        "errors": [],
+        "aborted": None,
+        "registered": {"documents": 0, "links": 0},
+        "summary": "",
+    }
+    result.update(overrides)
+    return result
+
+
+def _fake_disclosures_job(result, calls=None):
+    """disclosures.disclosures_job の代わり。呼ばれた params を calls に積み、result を返す。"""
+
+    def factory(db, settings):
+        def job(ctx, params):
+            if calls is not None:
+                calls.append(params)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return job
+
+    return factory
+
+
+def _insert_disclosure_link(db, doc_id, symbol, role="filer", submit_at="2026-09-01T00:00:00"):
+    """テストで disclosure_links の件数を変化させるための直接 INSERT（ジョブの中身はフェイクなので実際には呼ばれない）。"""
+    with db.write() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO disclosures (doc_id, doc_type_code, submit_at, category) "
+            "VALUES (?, ?, ?, ?)",
+            (doc_id, "120", submit_at, "report"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO disclosure_links (doc_id, symbol, role) VALUES (?, ?, ?)",
+            (doc_id, symbol, role),
+        )
+
+
+def test_edinet_skipped_silently_when_api_key_missing(env, monkeypatch):
+    """API キー未設定はエラーにせず黙ってスキップする（SPEC §2.8.2 順3のスキップ条件）。"""
+    db, settings = env
+    pending_calls = []
+    monkeypatch.setattr(
+        autoupdate.disclosures, "pending_dates", lambda *a, **k: pending_calls.append(1) or ["2026-09-19"]
+    )
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert step == {
+        "summary": "EDINET スキップ（API キー未設定）",
+        "failed": False,
+        "changed": False,
+        "updated_symbols": [],
+    }
+    assert result["failed"] is False
+    assert pending_calls == []  # API キーの有無を先に見るので、対象日は数えにいかない
+
+
+def test_edinet_up_to_date_when_no_pending_dates(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    monkeypatch.setattr(autoupdate.disclosures, "pending_dates", lambda *a, **k: [])
+    job_calls = []
+    monkeypatch.setattr(autoupdate.disclosures, "disclosures_job", _fake_disclosures_job(_job_result(), job_calls))
+
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert step == {"summary": "EDINET 取得済み", "failed": False, "changed": False, "updated_symbols": []}
+    assert job_calls == []  # 対象日が0件ならジョブは作られるが呼ばれない
+
+
+def test_edinet_calls_job_with_max_days_30(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    monkeypatch.setattr(
+        autoupdate.disclosures, "pending_dates", lambda *a, **k: ["2026-09-19", "2026-09-18"]
+    )
+    job_calls = []
+    monkeypatch.setattr(
+        autoupdate.disclosures, "disclosures_job", _fake_disclosures_job(_job_result(days=2), job_calls)
+    )
+
+    AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    assert autoupdate.AUTO_EDINET_MAX_DAYS == 30
+    assert job_calls == [{"max_days": 30}]
+
+
+def test_edinet_capped_message_when_more_than_max_days_pending(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    pending = [f"2026-08-{d:02d}" for d in range(1, 32)]  # 31日分（AUTO_EDINET_MAX_DAYS=30 を超える）
+    monkeypatch.setattr(autoupdate.disclosures, "pending_dates", lambda *a, **k: pending)
+    monkeypatch.setattr(
+        autoupdate.disclosures, "disclosures_job", _fake_disclosures_job(_job_result(days=30))
+    )
+
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert "直近30日分" in step["summary"]
+    assert "開示を取得" in step["summary"]
+    assert step["failed"] is False
+
+
+def test_edinet_no_capped_message_when_max_days_or_fewer_pending(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    pending = [f"2026-08-{d:02d}" for d in range(1, 31)]  # ちょうど30日分
+    monkeypatch.setattr(autoupdate.disclosures, "pending_dates", lambda *a, **k: pending)
+    monkeypatch.setattr(
+        autoupdate.disclosures, "disclosures_job", _fake_disclosures_job(_job_result(days=30))
+    )
+
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert "直近" not in step["summary"]
+    assert "開示を取得" not in step["summary"]
+    assert step["summary"] == "EDINET 30日分"
+
+
+def test_edinet_updated_symbols_only_for_symbols_with_new_links(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    monkeypatch.setattr(autoupdate.disclosures, "pending_dates", lambda *a, **k: ["2026-09-19"])
+    _insert_disclosure_link(db, "DOC-EXISTING", "1301.T")  # 実行前から付いている分。件数は変化しない
+
+    def factory(db_, settings_):
+        def job(ctx, params):
+            _insert_disclosure_link(db_, "DOC-NEW", "7203.T")  # 新しく付いた開示
+            return _job_result(days=1, registered={"documents": 1, "links": 1})
+
+        return job
+
+    monkeypatch.setattr(autoupdate.disclosures, "disclosures_job", factory)
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert step["updated_symbols"] == ["7203.T"]  # 1301.T（変化なし）・9984.T（付かず）は入らない
+    assert step["changed"] is True
+
+
+def test_edinet_changed_is_false_when_nothing_registered(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    monkeypatch.setattr(autoupdate.disclosures, "pending_dates", lambda *a, **k: ["2026-09-19"])
+    monkeypatch.setattr(
+        autoupdate.disclosures,
+        "disclosures_job",
+        _fake_disclosures_job(_job_result(days=1, registered={"documents": 0, "links": 0})),
+    )
+
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert step["changed"] is False
+    assert step["updated_symbols"] == []
+
+
+def test_edinet_aborted_marks_failed_and_summary_mentions_it(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    monkeypatch.setattr(
+        autoupdate.disclosures, "pending_dates", lambda *a, **k: ["2026-09-19", "2026-09-18"]
+    )
+    monkeypatch.setattr(
+        autoupdate.disclosures,
+        "disclosures_job",
+        _fake_disclosures_job(_job_result(days=1, aborted="forbidden", errors=["2026-09-18: 403"])),
+    )
+
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert step["failed"] is True
+    assert "中止" in step["summary"]
+
+
+def test_edinet_generic_exception_does_not_stop_later_steps(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    monkeypatch.setattr(autoupdate.disclosures, "pending_dates", lambda *a, **k: ["2026-09-19"])
+    monkeypatch.setattr(
+        autoupdate.disclosures,
+        "disclosures_job",
+        _fake_disclosures_job(RuntimeError("EDINET に接続できません")),
+    )
+
+    result = AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+    step = result["steps"]["edinet"]
+    assert step["failed"] is True
+    assert step["summary"] == "EDINET 失敗"
+    assert "short" in result["steps"]  # 後続ステップは打ち切られない
+    assert result["steps"]["short"]["summary"] == "空売り スキップ（設定オフ）"
+
+
+def test_edinet_cancelled_propagates(env, monkeypatch):
+    db, settings = env
+    monkeypatch.setenv(EDINET_API_KEY_ENV, "dummy-key")
+    monkeypatch.setattr(autoupdate.disclosures, "pending_dates", lambda *a, **k: ["2026-09-19"])
+    monkeypatch.setattr(autoupdate.disclosures, "disclosures_job", _fake_disclosures_job(Cancelled()))
+
+    with pytest.raises(Cancelled):
+        AutoUpdater(db, FakeService(db), settings).run(FakeCtx(), {})
+
+
+def test_step_order_is_prices_taisyaku_edinet_short(env):
+    """SPEC §2.8.2 の順（株価→貸借取引残高→開示→空売り）どおりに self.steps が並ぶこと。"""
+    db, settings = env
+    names = [name for name, _ in AutoUpdater(db, FakeService(db), settings).steps]
+    assert names == ["prices", "taisyaku", "edinet", "short"]
