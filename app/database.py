@@ -354,9 +354,75 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """EDINET コードリスト（SPEC §2.4.1a・§3）。証券コード → EDINET コードの対応表。
+
+    元ファイルを何度でも取り直せるので、取り込みは全置換でよい。
+    sec_code は5桁のまま保存する（末尾は 0。'409A0' のように英字を含むことがある）。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS edinet_codes (
+            edinet_code TEXT PRIMARY KEY,
+            sec_code    TEXT,
+            name        TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_edinet_codes_sec ON edinet_codes(sec_code)")
+
+
+def _migrate_v4(conn: sqlite3.Connection) -> None:
+    """開示メタデータと、銘柄との関係（SPEC §2.4.3・§2.4.6・§3）。
+
+    書類そのもの（disclosures）と、登録銘柄との関係（disclosure_links）を分けて持つ。
+    1つの書類が複数の登録銘柄に関係し得るため（買付者も対象会社も登録済み、など）。
+    どちらも data/edinet_cache/ から作り直せるので、構成が変わったら再走査すればよい。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS disclosures (
+            doc_id              TEXT PRIMARY KEY,
+            edinet_code         TEXT,
+            sec_code            TEXT,
+            filer_name          TEXT,
+            issuer_edinet_code  TEXT,
+            subject_edinet_code TEXT,
+            doc_type_code       TEXT NOT NULL,
+            form_code           TEXT,
+            ordinance_code      TEXT,
+            description         TEXT,
+            reason              TEXT,
+            period_start        TEXT,
+            period_end          TEXT,
+            submit_at           TEXT NOT NULL,
+            parent_doc_id       TEXT,
+            withdrawal          INTEGER,
+            disclosure          INTEGER,
+            category            TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS disclosure_links (
+            doc_id TEXT NOT NULL REFERENCES disclosures(doc_id) ON DELETE CASCADE,
+            symbol TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+            role   TEXT NOT NULL,
+            PRIMARY KEY (doc_id, symbol, role)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_disclosure_links_symbol ON disclosure_links(symbol)"
+    )
+
+
 # (バージョン, 移行関数)。追加するときは末尾に足し、既存の関数は書き換えない。
 # 貸借取引残高（margin_balances）は再取得できないので、どの移行でも DROP しないこと。
 MIGRATIONS = [
     (1, _migrate_v1),
     (2, _migrate_v2),
+    (3, _migrate_v3),
+    (4, _migrate_v4),
 ]

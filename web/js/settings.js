@@ -76,12 +76,30 @@ window.SettingsView = (function () {
     }
   }
 
+  // 接続テスト（SPEC §2.1.3）。API キーの値そのものは画面に出さない
+  async function testConnection(target, btn, resultEl) {
+    btn.disabled = true;
+    resultEl.classList.remove("is-ok", "is-error");
+    resultEl.textContent = "確認中…";
+    try {
+      const data = await api.call("test_connection", target);
+      resultEl.textContent = data.message;
+      resultEl.classList.add("is-ok");
+    } catch (err) {
+      resultEl.textContent = err.message;
+      resultEl.classList.add("is-error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     $("settings-save").addEventListener("click", save);
     $("view-settings").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-act]");
       if (btn) onSecretAction(btn.closest(".secret-row"), btn.dataset.act);
     });
+    $("test-edinet").addEventListener("click", () => testConnection("edinet", $("test-edinet"), $("test-edinet-result")));
   });
 
   return { load };

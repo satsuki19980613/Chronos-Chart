@@ -11,6 +11,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Callable
 
+from . import disclosures
 from .database import Database
 from .errors import Cancelled
 from .jobs import JobContext
@@ -25,6 +26,7 @@ PRICE_PAUSE_SEC = 1.0  # 株価取得の銘柄間の待機
 # 通信できない状態で全銘柄分の失敗を待たないよう、連続して失敗したらそのソースを打ち切る。
 # 1回で打ち切らないのは、上場廃止など銘柄固有の失敗で残りの銘柄まで更新されなくなるのを避けるため
 MAX_CONSECUTIVE_FAILURES = 2
+AUTO_EDINET_MAX_DAYS = 30  # SPEC §2.8.2: 未取得が30日を超える場合、自動更新では直近30日分だけ
 
 
 class AutoUpdater:
@@ -42,11 +44,10 @@ class AutoUpdater:
         self._ran = False
         self._lock = threading.Lock()
         # (名前, 関数)。関数は (ctx, stocks) -> {"summary": str, ...}。SPEC §2.8.2 の順で並べる。
-        # ("edinet", ...) は P4-5 でここ（taisyaku の前）に入る
         self.steps: list[tuple[str, Callable[[JobContext, list[dict]], dict]]] = [
             ("prices", self._update_prices),
-            # ("edinet", self._update_edinet),  # P4-5 で追加
             ("taisyaku", self._update_taisyaku),
+            ("edinet", self._update_edinet),
             ("short", self._update_short),
         ]
 
@@ -166,6 +167,82 @@ class AutoUpdater:
             "changed": bool(updated_symbols),
             "updated_symbols": updated_symbols,
         }
+
+    # ---------- 開示（EDINET）----------
+    def _update_edinet(self, ctx: JobContext, stocks: list[dict]) -> dict:
+        api_key = self.settings.get_secret("edinet_api_key")
+        if not api_key:
+            return {
+                "summary": "EDINET スキップ（API キー未設定）",
+                "failed": False,
+                "changed": False,
+                "updated_symbols": [],
+            }
+
+        pending = disclosures.pending_dates(self.db)
+        if not pending:
+            return {"summary": "EDINET 取得済み", "failed": False, "changed": False, "updated_symbols": []}
+
+        capped = len(pending) > AUTO_EDINET_MAX_DAYS
+        before = self._disclosure_link_counts()
+
+        job = disclosures.disclosures_job(self.db, self.settings)
+        ctx.progress(0, 1, "開示を取得中")
+        try:
+            result = job(ctx, {"max_days": AUTO_EDINET_MAX_DAYS})
+        except Cancelled:
+            raise
+        except Exception as exc:
+            log.warning("auto update: edinet failed: %s", exc)
+            return {
+                "summary": "EDINET 失敗",
+                "failed": True,
+                "changed": False,
+                "updated_symbols": [],
+                "errors": [str(exc)],
+            }
+        ctx.progress(1, 1, "開示の取得が完了")
+
+        after = self._disclosure_link_counts()
+        updated_symbols = sorted(
+            symbol for symbol, count in after.items() if count > before.get(symbol, 0)
+        )
+
+        if result.get("aborted"):
+            summary = f"EDINET 中止（{result['days']}日分取得後）"
+            failed = True
+        elif capped:
+            summary = f"EDINET 直近{AUTO_EDINET_MAX_DAYS}日分（残りは「開示を取得」から）"
+            failed = False
+        else:
+            summary = f"EDINET {result['days']}日分"
+            failed = False
+
+        registered = result.get("registered") or {}
+        documents = registered.get("documents", 0)
+        if documents:
+            summary += f"・{documents}件登録"
+
+        if result.get("errors"):
+            failed = True
+
+        payload = {
+            "summary": summary,
+            "failed": failed,
+            "changed": bool(documents),
+            "updated_symbols": updated_symbols,
+        }
+        if result.get("errors"):
+            payload["errors"] = result["errors"]
+        return payload
+
+    def _disclosure_link_counts(self) -> dict[str, int]:
+        """銘柄ごとの `disclosure_links` 件数。EDINET 取得の前後で差分を取り、更新された銘柄を判定する。"""
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol, COUNT(*) AS n FROM disclosure_links GROUP BY symbol"
+            ).fetchall()
+        return {row["symbol"]: row["n"] for row in rows}
 
     # ---------- 空売り残高（karauri.net）----------
     def _update_short(self, ctx: JobContext, stocks: list[dict]) -> dict:

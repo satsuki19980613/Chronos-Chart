@@ -22,6 +22,7 @@ def test_fresh_db_gets_latest_schema(tmp_path):
     assert db.schema_version() == LATEST
     assert {"stocks", "prices", "indicators", "settings", "fetch_log"} <= _tables(db)
     assert {"short_positions", "short_totals", "margin_balances"} <= _tables(db)
+    assert "edinet_codes" in _tables(db)
 
 
 def test_margin_balances_survives_migration(tmp_path, monkeypatch):
