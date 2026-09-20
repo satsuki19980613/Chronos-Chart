@@ -55,7 +55,7 @@ def main() -> None:
     jobs.register("auto_update", AutoUpdater(db, service, settings).run)
     if args.debug:
         jobs.register("selftest", selftest_job)
-    api = Api(service, jobs)
+    api = Api(service, jobs, settings)
 
     webview.create_window(
         f"Chronos Chart {__version__}",

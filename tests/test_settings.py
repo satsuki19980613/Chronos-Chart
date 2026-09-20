@@ -213,3 +213,39 @@ def test_no_warning_outside_sync_folder(env, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     _, _, settings = env
     assert settings.public_view()["warnings"] == []
+
+
+# ---------- JS 公開 API 経由 ----------
+def test_api_settings_roundtrip_never_returns_plain_secret(env):
+    from app.api import Api
+
+    _, _, settings = env
+    api = Api(service=None, settings=settings)
+
+    saved = api.save_settings({"gemini_rpd": 50, "edinet_api_key": SECRET})
+    assert saved["ok"] is True
+    assert saved["data"]["values"]["gemini_rpd"] == 50
+    assert SECRET not in repr(saved)
+    assert SECRET not in repr(api.get_settings())
+
+    assert api.reveal_secret("edinet_api_key") == {"ok": True, "data": SECRET}
+
+    cleared = api.save_settings({"edinet_api_key": ""})
+    assert cleared["data"]["secrets"]["edinet_api_key"]["masked"] == ""
+
+
+def test_api_reports_validation_errors_in_the_envelope(env):
+    from app.api import Api
+
+    _, _, settings = env
+    api = Api(service=None, settings=settings)
+    res = api.save_settings({"scrape_interval_sec": 1})
+    assert res["ok"] is False
+    assert "5 以上" in res["error"]
+    assert api.reveal_secret("nope")["ok"] is False
+
+
+def test_api_without_settings_fails_gracefully():
+    from app.api import Api
+
+    assert Api(service=None).get_settings()["ok"] is False

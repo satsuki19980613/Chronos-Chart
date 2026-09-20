@@ -71,9 +71,10 @@ def main() -> None:
     service = StockService(db, YahooFetcher(), CSV_DIR)
     service.rebuild_all(only_missing_csv=not db.init_schema())
     jobs = JobManager()
-    jobs.register("auto_update", AutoUpdater(db, service, Settings(db, data_dir=DATA_DIR)).run)
+    settings = Settings(db, data_dir=DATA_DIR)
+    jobs.register("auto_update", AutoUpdater(db, service, settings).run)
     jobs.register("selftest", selftest_job)
-    api = Api(service, jobs)
+    api = Api(service, jobs, settings)
 
     handler = partial(make_handler(api), directory=str(WEB_DIR))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)

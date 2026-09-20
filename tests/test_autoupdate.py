@@ -79,6 +79,7 @@ def test_updates_every_stock_in_order_with_pause(env):
     assert result["updated_symbols"] == ["1301.T", "7203.T", "9984.T"]
     assert result["summary"] == "株価 3件更新"
     assert result["failed"] is False
+    assert result["changed"] is True
     assert result["steps"]["prices"]["added"] == 6
     assert "株価を更新中 1/3" in ctx.labels
 
@@ -142,6 +143,7 @@ def test_everything_fresh_means_no_requests(env):
     assert ctx.waits == []
     assert result["summary"] == "株価 取得済み"
     assert result["updated_symbols"] == []
+    assert result["changed"] is False  # 画面は何も知らせない
 
 
 def test_zero_interval_disables_skipping(env):

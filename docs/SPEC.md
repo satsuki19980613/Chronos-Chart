@@ -773,7 +773,8 @@ EDINET・日証金・karauri.net への取得はこのクライアントを経�
 | メソッド | 引数 | 戻り値 |
 |---|---|---|
 | `get_settings()` | — | 設定値（APIキーはマスク済み）と警告（同期フォルダ配下など） |
-| `save_settings(values)` | dict | 保存後の設定値 |
+| `save_settings(values)` | dict | 保存後の設定値。API キーは空文字で削除、キーを含めなければ変更しない |
+| `reveal_secret(key)` | — | API キーの平文（設定画面の「表示」ボタン専用。10秒でマスクに戻す） |
 | `test_connection(target)` | `'edinet'｜'gemini'` | 疎通結果（各クライアント完成後に実装） |
 | `start_job(kind, params=None)` | §2.8.1 の種別 | `job_id` |
 | `job_status(job_id)` | — | 状態・進捗・結果 |
@@ -835,6 +836,7 @@ web/
 ├── css/style.css        拡張
 ├── js/app.js            画面制御（拡張。起動時に auto_update ジョブを開始）
 ├── js/jobs.js           [新] ジョブのポーリング・進捗・中断
+├── js/settings.js       [新] 設定タブ
 ├── js/chart.js          ペイン・マーカー・イベント欄連動（拡張）
 ├── js/bridge.js         既存
 ├── js/format.js         既存

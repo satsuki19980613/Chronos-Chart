@@ -69,6 +69,7 @@ class AutoUpdater:
             "steps": steps,
             "summary": "／".join(s["summary"] for s in steps.values() if s.get("summary")),
             "failed": any(s.get("failed") for s in steps.values()),
+            "changed": any(s.get("changed") for s in steps.values()),
             "updated_symbols": sorted({sym for s in steps.values() for sym in s.get("updated_symbols", [])}),
         }
 
@@ -112,6 +113,7 @@ class AutoUpdater:
         return {
             "summary": summary,
             "failed": bool(errors),
+            "changed": bool(updated),
             "updated_symbols": updated,
             "skipped": skipped,
             "added": added,

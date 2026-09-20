@@ -44,6 +44,8 @@
     setTimeout(() => el.remove(), ms);
   }
 
+  window.App = { toast }; // 他の画面スクリプト（settings.js など）から使う
+
   async function withBusy(text, fn) {
     if (!$("busy").hidden) return undefined; // 処理中の二重実行（Enter 連打など）を防ぐ
     $("busy-text").textContent = text;
@@ -71,6 +73,7 @@
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${name}`));
     if (name === "dashboard") openDashboard(state.currentSymbol);
     if (name === "export") loadExportFiles();
+    if (name === "settings") SettingsView.load();
   }
 
   // ---------- 登録画面 ----------
@@ -461,6 +464,8 @@
       toast("自動更新を中断しました");
     } else if (!job.result || job.result.skipped) {
       return;
+    } else if (!job.result.changed && !job.result.failed) {
+      return; // すべて取得済みで何もしなかったときは知らせない
     } else {
       toast(`自動更新: ${job.result.summary}`, job.result.failed ? "warn" : "info", 6000);
     }

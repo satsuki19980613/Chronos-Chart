@@ -58,17 +58,17 @@
 
 | 項目 | 内容 |
 |---|---|
-| **現在のフェーズ** | P1（基盤） |
-| **次にやること** | P1-8（設定タブUI）。その後 P2 へ |
+| **現在のフェーズ** | P2（需給データの取得） |
+| **次にやること** | P2-1（karauri.net の合成フィクスチャ）と P2-3（日証金の列定義の確定）。どちらも実サイトへ1回だけアクセスする作業なので、着手前にユーザーへ一言確認する |
 | **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。設計文書一式（レビュー結果・SPEC/PLAN 1.1 を含む）を `main` にマージし、**`origin/main` に push 済み**（`main` は `origin/main` を追跡）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
-| **動作確認** | 2026-09-20、P1-1（改名）〜P1-3 後に `python -m pytest` で **261 passed / 15 skipped**（skip は実通信テストのみ）。GUI の実機起動は未確認 |
+| **動作確認** | 2026-09-20、P1-1P1 完了時点で `.venv\Scripts\python.exe -m pytest` は **337 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバー（ブラウザ）でジョブの進捗・中断、起動時の自動更新（実際に yfinance から2銘柄を更新）、設定タブの保存・検証・キーの表示と削除を確認済み。**pywebview のウィンドウ（`start.bat`）での起動はユーザーの実機確認待ち** |
 
 ### フェーズの状態
 
 | フェーズ | 内容 | 状態 |
 |---|---|---|
 | P0 | 準備・設計文書・レビュー反映 | DONE |
-| P1 | 基盤（設定・HTTPクライアント・ジョブ・**起動時自動更新**） | WIP |
+| P1 | 基盤（設定・HTTPクライアント・ジョブ・**起動時自動更新**） | DONE |
 | P2 | 需給データの取得 | TODO |
 | P3 | 需給のチャート表示 | TODO |
 | P4 | 開示の取得・突合・分類 | TODO |
@@ -105,7 +105,7 @@
 | P1-5 | `DONE` | 共通HTTPクライアント | SPEC §4.1。間隔制御・直列化・UA・リトライ（**待機の下限はソースの最小間隔**）・中断フラグ対応の待機・キーのマスク。`test_sources_base.py` | P1-2 | `sources/base.py` |
 | P1-6 | `DONE` | ジョブ基盤 | SPEC §2.8.1。`start_job` / `job_status` / `cancel_job` / `active_jobs`、同種の多重起動拒否、`Event.wait` による中断。画面側のポーリングとヘッダのステータス欄（進捗・中断ボタン）。ダミージョブで動作確認。`test_jobs.py` | P1-4 | `jobs.py` `api.py` `js/jobs.js` `index.html` `style.css` |
 | P1-7 | `DONE` | **起動時の自動更新（株価）** | SPEC §2.8.2 のうち株価の部分。`init()` 完了後に JS が `auto_update` ジョブを開始。`fetch_log(source='yahoo')` の記録（手動 `update` / `update_all` でも更新）、最小間隔によるスキップ、銘柄間1秒、失敗してもダイアログを出さず結果をまとめて表示、完了後の一覧再読込と表示中銘柄の再描画、中断。`auto_update_on_start` オフで何もしない。`test_autoupdate.py` | P1-6 | `autoupdate.py` `service.py` `app.js` |
-| P1-8 | `TODO` | 設定タブUI | SPEC §2.1.3。EDINETの取得手順5段階、Gemini上限の入力と注記、`scrape_contact` の注記、自動更新のオン／オフ、規約表示、同期フォルダ警告。**接続テストと打ち切り解除はここでは作らない**（P4-4・P6-6） | P1-4 | `index.html` `app.js` `style.css` `api.py` |
+| P1-8 | `DONE` | 設定タブUI | SPEC §2.1.3。EDINETの取得手順5段階、Gemini上限の入力と注記、`scrape_contact` の注記、自動更新のオン／オフ、規約表示、同期フォルダ警告。**接続テストと打ち切り解除はここでは作らない**（P4-4・P6-6） | P1-4 | `index.html` `app.js` `style.css` `api.py` |
 
 ### P2 — 需給データの取得
 
@@ -213,6 +213,7 @@
 - テーブルの追加は `app/database.py` の `MIGRATIONS` の末尾に `(バージョン, 関数)` を足す。既存の移行関数は書き換えない。
   各移行は明示的なトランザクションで囲まれ、失敗時は DDL ごとロールバックされる（Python の sqlite3 は DDL を暗黙にコミットするため）
 - 開発・テストはプロジェクト直下の `.venv`（Git 対象外）で行う: `.venv\Scripts\python.exe -m pytest`。グローバルの Python には `keyring` が入っていない。`start.bat` は `.venv` があれば優先して使う
+- 設定タブは `web/js/settings.js`。入力欄は `data-setting="<キー>"` を付けるだけで読み書きされる。API キーの行は `.secret-row[data-secret]`。API は `get_settings` / `save_settings` / `reveal_secret`。接続テスト（P4-4・P6-6）と Gemini 打ち切り解除（P6-6）のボタンは未実装
 - 自動更新は `app/autoupdate.py` の `AutoUpdater`。ソースを足すときは `self.steps` に `(名前, 関数)` を追加する。関数は `(ctx, stocks) -> {"summary": str, "failed": bool, "updated_symbols": [...]}`。スキップ判定は `_fetched_recently(source, key)`。P2-7・P4-5 はこの形に従う
 - ジョブは `app/jobs.py`。`jobs.register(kind, func)` で登録し、関数は `func(ctx, params)`。リクエストの合間に `ctx.check()`、待機は `ctx.wait(秒)`、進捗は `ctx.progress(current, total, label)`、`ctx.cancel` は `HttpClient.get(cancel=...)` にそのまま渡せる。画面側は `Jobs.run(kind, params)`（`web/js/jobs.js`）で開始〜終了待ち、進捗と中断ボタンはヘッダに自動で出る。動作確認用の `selftest` ジョブは `--debug` と開発サーバーでのみ登録される
 - 画面の確認は開発サーバー（`python dev_server.py` → `http://127.0.0.1:8765/?dev`）で行える。データを汚さないよう `CHRONOS_DATA_DIR` を一時フォルダに向けること
