@@ -53,7 +53,7 @@
 | **完了したフェーズ** | なし |
 | **次にやること** | P0-4（レビュー結果の反映）→ P1-1 |
 | **全体進捗** | 3 / 38 タスク完了 |
-| **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。**未コミット・未push** |
+| **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。<br>ブランチ `docs/initial-design` に設計文書をコミット済み。**main 未マージ・未push** |
 | **動作確認** | 土台の状態から未変更のため、土台の機能はそのまま動く想定（未検証） |
 
 ### フェーズ進捗
@@ -208,7 +208,7 @@
 
 | # | 日付 | 実施タスク | 結果・特記事項 |
 |---|---|---|---|
-| 1 | 2026-09-20 | P0-1, P0-2, P0-3 | 土台クローン・リモート設定。サブエージェント4本でリサーチ。RESEARCH/DESIGN/SPEC/PLAN/REVIEW_REQUEST 作成。方針3点をユーザー確定（日証金＋karauri併用 / AIへ需給を送らない / EDINETのみ） |
+| 1 | 2026-09-20 | P0-1, P0-2, P0-3 | 土台クローン・リモート設定。サブエージェント4本でリサーチ。RESEARCH/DESIGN/SPEC/PLAN/REVIEW_REQUEST 作成。方針3点をユーザー確定（日証金＋karauri併用 / AIへ需給を送らない / EDINETのみ）。ブランチ `docs/initial-design` にコミット |
 
 ---
 
@@ -250,7 +250,7 @@
 | 3 | `OPEN` | `disclosure_facts` に保存する要素IDのホワイトリストが暫定 | P4-4 で実 XBRL CSV を見て確定 | P4-4 |
 | 4 | `OPEN` | `response.usage_metadata` の正確なフィールド名 | P6-1 で実レスポンスを確認 | P6-1 |
 | 5 | `OPEN` | EDINET 利用規約の正確な文言（調査時は AI 要約経由だった） | P4-1 で原文を確認 | P4-1 |
-| 6 | `OPEN` | 初期コミットの push 可否 | ユーザーの指示待ち（P0-5） | — |
+| 6 | `OPEN` | `docs/initial-design` の main へのマージと push | ユーザーの指示待ち（P0-5） | — |
 
 ---
 
