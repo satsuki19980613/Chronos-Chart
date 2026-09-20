@@ -85,7 +85,7 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P3（需給のチャート表示） |
-| **次にやること** | P3-1（dashboard payload に `chart.short` / `chart.taisyaku` を足す）。**`prices.date` に存在する日付だけ**を載せる（whitespace は使わない）。そのあと P3-2（空売りペイン・**`LWC.LineType.WithSteps`**）→ P3-3（貸借ペイン・欠測で線を切る。§5-2 を解消）→ P3-4 |
+| **次にやること** | P3-2（空売りペイン・**`LWC.LineType.WithSteps`**）→ P3-3（貸借ペイン・欠測で線を切る。§5-2 を解消）→ P3-4（データなし時の表示）。payload は P3-1 で用意済み |
 | **リポジトリ状態** | 作業ブランチは **`feature/p2-supply`**（`main` から分岐）。`main` は `origin/main` を追跡し P1 完了時点まで push 済み。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **外部アクセスの消費** | 2026-09-20 に P2-1・P2-3 の採取を実施済み（karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回）。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらのサイトへはアクセスしない**。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` |
 | **動作確認** | 2026-09-20、P2 完了時点で `.venv\Scripts\python.exe -m pytest` は **440 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
@@ -150,7 +150,7 @@
 
 | ID | 状態 | タスク | 完了条件 | 依存 | 対象 |
 |---|---|---|---|---|---|
-| P3-1 | `TODO` | dashboard payload の拡張 | `chart.short` / `chart.taisyaku` を追加。**`prices.date` に存在する日付だけ**を載せる（whitespace は使わない）。空売りは最新の足まで据え置き点を足す | P2-4 P2-5 | `service.py` `api.py` |
+| P3-1 | `DONE` | dashboard payload の拡張 | `chart.short` / `chart.taisyaku` を追加。**`prices.date` に存在する日付だけ**を載せる（whitespace は使わない）。空売りは最新の足まで据え置き点を足す | P2-4 P2-5 | `service.py` `api.py` |
 | P3-2 | `TODO` | 空売り残高ペイン | SPEC §2.5.1〜2.5.2。**`LWC.LineType.WithSteps`**（数値リテラル禁止）。チップで切替。ラベルと注記は SPEC §1.4 | P3-1 | `chart.js` |
 | P3-3 | `TODO` | 貸借取引残高ペイン | 融資残高・貸株残高の2本。**通常線。欠測をまたいで結ばない**（実装方法を決めて SPEC §9-2 を解消）。取得開始日以降のみである旨の注記 | P3-1 | `chart.js` |
 | P3-4 | `TODO` | データなし時の表示 | 値が1件も無い銘柄はチップを無効化し理由を表示。**ラベルは「貸借取引残高（日証金）」** | P3-2 P3-3 | `chart.js` `app.js` |
@@ -268,6 +268,16 @@
   - karauri の取得の入口: `select_targets(db, settings, symbols=None, force=False)` / `estimate(db, settings, symbols=None)` /
     `fetch_one(db, settings, symbol, cancel=None, client=None)` / `short_all_job(db, settings)`（`jobs.register("short_all", ...)` 用）
   - **P2-7 はこれらを呼ぶこと**（取得ロジックを autoupdate 側に書き直さない）
+
+### `dashboard()` の需給 payload（P3-1 で確定。P3-2〜P3-4 はこれ前提）
+
+`chart.short` と `chart.taisyaku` はどちらも `{"available": bool, "reason": str|None, "points": [...]}`。
+`available` が false のとき `reason` に画面へ出す理由が入る（SPEC §2.5.2 の文言）。
+
+- `short.points`: `{"date", "ratio", "qty", "holders", "carried"}`。**`prices.date` に存在する日付だけ**・昇順。
+  最後の報告が最新の足より前なら、最新の足の日付に同じ値の点を1つ足してある（その点だけ `carried: true`）
+- `taisyaku.points`: `{"date", "yushi", "kashi", "net", "kind"}`。同じく足のある日付だけ・昇順。
+  **据え置きはしない。欠測は欠測のまま**なので、線を切るのは画面側の仕事（`chart.dates` 上で隣り合うかで判定する）
 - `.gitattributes` は既定で `* text=auto eol=lf`。**改行をそのまま保ちたいフィクスチャは `-text` を明示する**
   （日証金の合成 CSV は cp932・CRLF。放っておくと LF に正規化されて実物と構造が変わる。`test_taisyaku.py` が検知する）
 - `tests/test_real_fixtures.py` は `tests/fixtures/real/` に実物があるときだけ走る（無ければ skip）。
