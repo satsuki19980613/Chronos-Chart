@@ -5,14 +5,16 @@
 
 import csv
 import io
+import threading
 from pathlib import Path
 
 import pytest
+import requests
 
 from app.database import Database
-from app.errors import UserFacingError
+from app.errors import Cancelled, UserFacingError
 from app.sources import taisyaku
-from app.sources.base import HttpClient
+from app.sources.base import HttpClient, HttpError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FINAL_CSV = FIXTURES / "taisyaku_zandaka_final.csv"
@@ -325,3 +327,73 @@ def test_make_client_uses_taisyaku_source_and_min_interval():
     assert isinstance(client, HttpClient)
     assert client.source == "taisyaku"
     assert client.min_interval >= 5.0
+
+
+# ---------- fetch_and_save ----------
+
+
+class _RaisingSession:
+    def get(self, url, params=None, headers=None, timeout=None):
+        raise requests.exceptions.ConnectionError("boom")
+
+
+def _client_with_content(content: bytes):
+    session = _FakeSession(_FakeResponse(content))
+    client = HttpClient(
+        source="taisyaku",
+        min_interval=0,
+        agent="ChronosChart-test",
+        session=session,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    return client, session
+
+
+def test_fetch_and_save_saves_registered_domestic_symbols(tmp_path):
+    db = _db_with_stocks(tmp_path, ["1301.T"])
+    client, session = _client_with_content(FINAL_CSV.read_bytes())
+    result = taisyaku.fetch_and_save(db, symbols=["1301.T"], client=client)
+    assert result["saved"] == 1
+    assert result["date"] == "2026-09-17"
+    assert session.calls[0][0] == taisyaku.ZANDAKA_URL
+    logged = db.get_fetch("taisyaku", "zandaka")
+    assert logged["result"] == "ok"
+
+
+def test_fetch_and_save_defaults_symbols_to_domestic_registered_stocks(tmp_path):
+    """symbols を指定しなければ登録銘柄のうち国内銘柄（.T）だけを対象にする。"""
+    db = _db_with_stocks(tmp_path, ["1301.T"])
+    db.upsert_stock("AAPL", "AAPL", "Apple", "NASDAQ", "USD")
+    client, _ = _client_with_content(FINAL_CSV.read_bytes())
+    result = taisyaku.fetch_and_save(db, client=client)
+    assert result["saved"] == 1
+    assert _fetch_margin_rows(db, "1301.T")
+    assert _fetch_margin_rows(db, "AAPL") == []
+
+
+def test_fetch_and_save_logs_error_and_reraises_on_failure(tmp_path):
+    db = _db_with_stocks(tmp_path, ["1301.T"])
+    client = HttpClient(
+        source="taisyaku",
+        min_interval=0,
+        agent="ChronosChart-test",
+        session=_RaisingSession(),
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    with pytest.raises(HttpError):
+        taisyaku.fetch_and_save(db, symbols=["1301.T"], client=client)
+    logged = db.get_fetch("taisyaku", "zandaka")
+    assert logged["result"].startswith("error:")
+
+
+def test_fetch_and_save_cancelled_does_not_log_as_error(tmp_path):
+    db = _db_with_stocks(tmp_path, ["1301.T"])
+    cancel = threading.Event()
+    cancel.set()
+    client, session = _client_with_content(FINAL_CSV.read_bytes())
+    with pytest.raises(Cancelled):
+        taisyaku.fetch_and_save(db, symbols=["1301.T"], cancel=cancel, client=client)
+    assert session.calls == []
+    assert db.get_fetch("taisyaku", "zandaka") is None

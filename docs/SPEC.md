@@ -866,9 +866,9 @@ EDINET・日証金・karauri.net への取得はこのクライアントを経�
 | `job_status(job_id)` | — | 状態・進捗・結果 |
 | `cancel_job(job_id)` | — | 受付結果 |
 | `active_jobs()` | — | 実行中ジョブの一覧（画面再読込時の復帰用） |
-| `estimate_short_all()` | — | 対象銘柄数・スキップ数・所要時間の見積り（確認ダイアログ用） |
-| `fetch_short(symbol)` | — | 取得件数・最新計算日（単一銘柄・ブロッキング） |
-| `fetch_taisyaku()` | — | 取得した申込日・区分・反映銘柄数（ブロッキング） |
+| `estimate_short_all(symbols=None)` | 省略時は登録銘柄すべて | 対象銘柄数・スキップ数・間隔・所要時間の見積りと `contact_ok`（確認ダイアログ用） |
+| `fetch_short(symbol)` | — | 取得件数・置換した最小計算日（単一銘柄・ブロッキング。再取得の抑止は掛けない）。国内銘柄以外は `status='skipped'` |
+| `fetch_taisyaku()` | — | 取得した申込日・保存件数・確報に上書きされず飛ばした件数・行が無かった銘柄（ブロッキング） |
 | `get_disclosures(symbol)` | — | 開示一覧 |
 | `open_disclosure(doc_id)` | — | EDINET の閲覧ページを既定ブラウザで開く |
 | `ai_quota()` | — | モデル・本日の使用量・残量・打ち切りフラグ |

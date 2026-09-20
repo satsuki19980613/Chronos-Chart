@@ -71,6 +71,7 @@
       t.setAttribute("aria-selected", String(active));
     });
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${name}`));
+    if (name === "register") refreshShortAllAvailability();
     if (name === "dashboard") openDashboard(state.currentSymbol);
     if (name === "export") loadExportFiles();
     if (name === "settings") SettingsView.load();
@@ -133,6 +134,7 @@
     $("stock-count").textContent = list.length;
     $("stock-empty").hidden = list.length > 0;
     $("update-all").disabled = list.length === 0;
+    refreshShortAllAvailability();
     $("stock-list").innerHTML = list.map((s) => `
       <tr>
         <td class="symbol">${f.escape(s.code)}</td>
@@ -181,6 +183,58 @@
     await refreshStocks();
   }
 
+  // ---------- 空売り残高の一括取得（SPEC §2.2.4） ----------
+  async function refreshShortAllAvailability() {
+    const btn = $("short-all");
+    if (state.stocks.length === 0) {
+      btn.disabled = true;
+      return;
+    }
+    try {
+      const settings = await api.call("get_settings");
+      const ok = Boolean((settings.values.scrape_contact || "").trim());
+      btn.disabled = !ok;
+      btn.title = ok ? "" : "設定タブで karauri.net への連絡先を入力してください";
+    } catch (_) {
+      // 設定を読めなくても登録画面自体は使えるようにしておく（判断は次回の refreshStocks に委ねる）
+    }
+  }
+
+  async function runShortAll() {
+    let est;
+    try {
+      est = await api.call("estimate_short_all");
+    } catch (err) {
+      toast(err.message, "error", 8000);
+      return;
+    }
+    if (est.targets === 0) {
+      toast(est.skipped ? "取得が必要な銘柄はありません（すべて取得済みです）" : "対象銘柄がありません");
+      return;
+    }
+    const minutes = Math.max(1, Math.round(est.eta_sec / 60));
+    const ok = confirm(
+      `対象 ${est.targets} 銘柄 × 間隔 ${est.interval_sec} 秒 ＝ およそ ${minutes} 分かかります。実行しますか？\n\n` +
+      "取得は深夜〜早朝の実行を推奨します（公表は取引時間外のため）。実行中はいつでも中断できます。"
+    );
+    if (!ok) return;
+
+    let job;
+    try {
+      job = await Jobs.run("short_all", {});
+    } catch (err) {
+      toast(err.message, "error", 8000);
+      return;
+    }
+    if (job.state === "cancelled") {
+      toast("空売り残高の一括取得を中断しました");
+    } else {
+      toast(job.result?.summary || "空売り残高の一括取得が完了しました", job.result?.aborted ? "warn" : "info", 8000);
+    }
+    await refreshStocks();
+    if (state.currentSymbol && $("view-dashboard").classList.contains("is-active")) await openDashboard(state.currentSymbol);
+  }
+
   function viewStock(symbol) {
     state.currentSymbol = symbol;
     switchTab("dashboard");
@@ -200,11 +254,18 @@
     $("dash-content").hidden = !hasStocks;
     $("dash-update").disabled = !hasStocks;
     $("stock-select").disabled = !hasStocks;
+    $("dash-supply-hint").hidden = !hasStocks;
     if (!hasStocks) {
+      $("dash-fetch-short").disabled = true;
+      $("dash-fetch-taisyaku").disabled = true;
       destroyChart();
       return;
     }
     const target = symbol && state.stocks.some((s) => s.symbol === symbol) ? symbol : state.stocks[0].symbol;
+    const domestic = target.endsWith(".T");
+    $("dash-fetch-short").disabled = !domestic;
+    $("dash-fetch-short").title = domestic ? "" : "空売り残高は国内銘柄（.T）のみ取得できます";
+    $("dash-fetch-taisyaku").disabled = false;
     const data = await withBusy("読み込み中…", () => api.call("dashboard", target));
     if (!data) {
       // 読み込みに失敗したら、表示中の銘柄に選択を戻して画面と状態を一致させる
@@ -408,6 +469,7 @@
     $("search-form").addEventListener("submit", search);
     $("stock-list").addEventListener("click", onStockListClick);
     $("update-all").addEventListener("click", updateAll);
+    $("short-all").addEventListener("click", runShortAll);
     $("stock-select").addEventListener("change", (e) => openDashboard(e.target.value));
     $("dash-update").addEventListener("click", async () => {
       const symbol = state.currentSymbol;
@@ -417,6 +479,29 @@
       showWarnings(res);
       await refreshStocks();
       await openDashboard(symbol);
+    });
+    $("dash-fetch-short").addEventListener("click", async () => {
+      const symbol = state.currentSymbol;
+      if (!symbol) return;
+      const res = await withBusy(`${symbol} の空売り残高を取得しています…`, () => api.call("fetch_short", symbol));
+      if (!res) return;
+      if (res.status === "skipped") {
+        toast("空売り残高は国内銘柄（.T）のみ取得できます", "warn");
+      } else {
+        toast(`空売り残高を取得しました（${res.rows}行）`);
+      }
+      await openDashboard(symbol);
+    });
+    $("dash-fetch-taisyaku").addEventListener("click", async () => {
+      const res = await withBusy("貸借取引残高（日証金）を取得しています…", () => api.call("fetch_taisyaku"));
+      if (!res) return;
+      if (res.date) {
+        toast(`貸借取引残高を取得しました（申込日 ${f.date(res.date)}・${res.saved}銘柄）`);
+      } else {
+        toast("貸借取引残高を取得しました（対象銘柄の行はありませんでした）", "warn");
+      }
+      await refreshStocks();
+      if (state.currentSymbol) await openDashboard(state.currentSymbol);
     });
     $("range-buttons").addEventListener("click", (e) => {
       const btn = e.target.closest("button");

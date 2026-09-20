@@ -17,6 +17,7 @@ from .fetcher import FetchError
 from .jobs import JobManager
 from .service import StockService
 from .settings import Settings
+from .sources import karauri, taisyaku
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +118,22 @@ class Api:
     @_response
     def active_jobs(self):
         return self._jobs.active()
+
+    # ---------- 需給データの取得（P2-6。SPEC §2.2.4・§2.3.2）----------
+    @_response
+    def fetch_short(self, symbol: str):
+        """単一銘柄の空売り残高を取得する（ブロッキング）。再取得の抑止は掛からない。"""
+        return karauri.fetch_one(self._service.db, self._require_settings(), symbol)
+
+    @_response
+    def fetch_taisyaku(self):
+        """日証金の貸借取引残高を1回取得する（ブロッキング。全銘柄分が1回で入る）。"""
+        return taisyaku.fetch_and_save(self._service.db, self._require_settings())
+
+    @_response
+    def estimate_short_all(self, symbols: list[str] | None = None):
+        """空売り残高の一括取得の事前見積り（画面の確認ダイアログ用）。"""
+        return karauri.estimate(self._service.db, self._require_settings(), symbols)
 
     @_response
     def open_csv_folder(self):

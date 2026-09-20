@@ -1,16 +1,28 @@
 """空売り残高の取得とパース（SPEC §2.2）。ネットワークは使わない（合成 HTML と fake session）。"""
 
 import logging
+import threading
 from pathlib import Path
 
 import pytest
+import requests
 
 from app.database import Database
-from app.errors import UserFacingError
+from app.errors import Cancelled, UserFacingError
 from app.settings import Settings
-from app.sources import base
-from app.sources.base import HttpClient
-from app.sources.karauri import compute_totals, fetch_html, make_client, parse, save
+from app.sources import base, karauri
+from app.sources.base import HttpClient, HttpError
+from app.sources.karauri import (
+    compute_totals,
+    estimate,
+    fetch_html,
+    fetch_one,
+    make_client,
+    parse,
+    save,
+    select_targets,
+    short_all_job,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "karauri_synthetic.html"
 
@@ -332,3 +344,320 @@ def test_save_with_no_rows_does_nothing(db):
             "SELECT COUNT(*) FROM short_totals WHERE symbol = ?", ("1234.T",)
         ).fetchone()[0]
     assert totals_count == 1  # 消されていない
+
+
+# ---------- 取得の入口（P2-6）: fetch_one / short_all_job / estimate ----------
+
+class _ScriptedSession:
+    """呼び出しごとに事前に決めた挙動を返すフェイクセッション。
+
+    plan の要素は ("html", text) / ("status", code) / ("raise",) のいずれか。
+    """
+
+    def __init__(self, plan):
+        self.plan = list(plan)
+        self.calls: list[str] = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append(url)
+        if not self.plan:
+            raise AssertionError(f"想定外の追加リクエスト: {url}")
+        kind, *rest = self.plan.pop(0)
+        if kind == "raise":
+            raise requests.exceptions.ConnectionError("boom")
+        if kind == "status":
+            return _StatusResponse(rest[0])
+        if kind == "html":
+            return _HtmlResponse(rest[0])
+        raise AssertionError(f"unknown plan step: {kind}")
+
+
+class _HtmlResponse:
+    def __init__(self, text):
+        self.status_code = 200
+        self.text = text
+
+
+class _StatusResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+        self.text = ""
+
+
+def _scripted_client(plan):
+    """待機なしの HttpClient と、呼び出しを記録するセッションを返す。"""
+    session = _ScriptedSession(plan)
+    client = HttpClient(
+        source="karauri",
+        min_interval=0,
+        agent="ChronosChart-test",
+        no_retry_statuses=frozenset({403, 429}),
+        session=session,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    return client, session
+
+
+class FakeCtx:
+    """app.jobs.JobContext の代わり（tests/test_autoupdate.py と同じ方針）。"""
+
+    def __init__(self):
+        self.cancel = threading.Event()
+        self.labels: list[str] = []
+
+    def progress(self, current, total, label=""):
+        self.labels.append(label)
+
+    def check(self):
+        if self.cancel.is_set():
+            raise Cancelled()
+
+
+@pytest.fixture
+def env(tmp_path):
+    """`short_all_job` 用の db・settings（scrape_contact 設定済み）。"""
+    database = Database(tmp_path / "job.db")
+    database.init_schema()
+    settings = Settings(database, keyring_backend=object())
+    settings.update({"scrape_contact": "me@example.test", "scrape_interval_sec": 5, "short_recheck_hours": 24})
+    return database, settings
+
+
+def _add_stock(db, code, exchange="東証", currency="JPY"):
+    db.upsert_stock(f"{code}.T", code, f"テスト{code}", exchange, currency)
+
+
+# ---- fetch_one ----
+
+def test_fetch_one_skips_non_domestic_symbol(db):
+    result = fetch_one(db, None, "AAPL")
+    assert result == {"symbol": "AAPL", "status": "skipped", "reason": "not_domestic"}
+
+
+def test_fetch_one_success_saves_and_logs_ok(db, html, rows):
+    client, session = _scripted_client([("html", html)])
+    result = fetch_one(db, None, "1234.T", client=client)
+    assert result["status"] == "ok"
+    assert result["rows"] == len(rows)
+    assert session.calls == ["https://karauri.net/1234/"]
+    logged = db.get_fetch("karauri", "1234.T")
+    assert logged["result"] == "ok"
+
+
+def test_fetch_one_failure_logs_error_and_reraises(db):
+    client, _ = _scripted_client([("raise",)])
+    with pytest.raises(HttpError):
+        fetch_one(db, None, "1234.T", client=client)
+    logged = db.get_fetch("karauri", "1234.T")
+    assert logged["result"].startswith("error:")
+
+
+def test_fetch_one_cancelled_does_not_log_as_error(db):
+    cancel = threading.Event()
+    cancel.set()
+    client, session = _scripted_client([])
+    with pytest.raises(Cancelled):
+        fetch_one(db, None, "1234.T", cancel=cancel, client=client)
+    assert session.calls == []
+    assert db.get_fetch("karauri", "1234.T") is None
+
+
+# ---- select_targets / estimate ----
+
+def test_select_targets_filters_to_domestic_symbols(env):
+    database, settings = env
+    _add_stock(database, "1111")
+    database.upsert_stock("AAPL", "AAPL", "Apple", "NASDAQ", "USD")
+    targets, skipped = select_targets(database, settings)
+    assert targets == ["1111.T"]
+    assert skipped == 0
+
+
+def test_select_targets_skips_recently_fetched(env):
+    database, settings = env
+    _add_stock(database, "1111")
+    _add_stock(database, "2222")
+    database.log_fetch("karauri", "1111.T", "ok")
+    targets, skipped = select_targets(database, settings)
+    assert targets == ["2222.T"]
+    assert skipped == 1
+
+
+def test_select_targets_force_ignores_recheck(env):
+    database, settings = env
+    _add_stock(database, "1111")
+    database.log_fetch("karauri", "1111.T", "ok")
+    targets, skipped = select_targets(database, settings, force=True)
+    assert targets == ["1111.T"]
+    assert skipped == 0
+
+
+def test_estimate_reports_targets_skipped_interval_and_contact(env):
+    database, settings = env
+    _add_stock(database, "1111")
+    _add_stock(database, "2222")
+    database.log_fetch("karauri", "1111.T", "ok")
+    result = estimate(database, settings)
+    assert result == {
+        "targets": 1,
+        "skipped": 1,
+        "interval_sec": 5.0,
+        "eta_sec": 5.0,
+        "contact_ok": True,
+    }
+
+
+def test_estimate_contact_not_ok_when_scrape_contact_missing(tmp_path):
+    database = Database(tmp_path / "e.db")
+    database.init_schema()
+    settings = Settings(database, keyring_backend=object())
+    assert estimate(database, settings)["contact_ok"] is False
+
+
+# ---- short_all_job ----
+
+def test_short_all_job_requires_scrape_contact(tmp_path):
+    database = Database(tmp_path / "noc.db")
+    database.init_schema()
+    _add_stock(database, "1111")
+    settings = Settings(database, keyring_backend=object())  # scrape_contact 未設定
+    job = short_all_job(database, settings)
+    with pytest.raises(UserFacingError):
+        job(FakeCtx(), {})
+
+
+def test_short_all_job_aborts_immediately_on_403_without_retry(monkeypatch, env):
+    database, settings = env
+    _add_stock(database, "1111")
+    _add_stock(database, "2222")
+    client, session = _scripted_client([("status", 403)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {})
+
+    assert result["aborted"] == "forbidden"
+    assert result["updated"] == []
+    assert len(result["errors"]) == 1
+    assert session.calls == ["https://karauri.net/1111/"]  # 2件目は試みられない
+
+
+def test_short_all_job_aborts_immediately_on_429_without_retry(monkeypatch, env):
+    database, settings = env
+    _add_stock(database, "1111")
+    client, session = _scripted_client([("status", 429)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {})
+
+    assert result["aborted"] == "forbidden"
+    assert len(session.calls) == 1  # リトライしない
+
+
+def test_short_all_job_aborts_after_three_consecutive_failures(monkeypatch, env):
+    database, settings = env
+    for code in ("1111", "2222", "3333", "4444"):
+        _add_stock(database, code)
+    client, session = _scripted_client([("raise",), ("raise",), ("raise",)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {})
+
+    assert result["aborted"] == "failures"
+    assert result["updated"] == []
+    assert len(result["errors"]) == 3
+    assert len(session.calls) == 3  # 4件目は試みられない
+
+
+def test_short_all_job_continues_after_one_or_two_failures(monkeypatch, env, html):
+    database, settings = env
+    for code in ("1111", "2222", "3333"):
+        _add_stock(database, code)
+    client, session = _scripted_client([("raise",), ("raise",), ("html", html)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {})
+
+    assert result["aborted"] is None
+    assert result["updated"] == ["3333.T"]
+    assert len(result["errors"]) == 2
+
+
+def test_short_all_job_skips_recently_fetched_symbols(monkeypatch, env, html):
+    database, settings = env
+    _add_stock(database, "1111")
+    _add_stock(database, "2222")
+    database.log_fetch("karauri", "1111.T", "ok")
+    client, session = _scripted_client([("html", html)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {})
+
+    assert result["skipped"] == 1
+    assert result["updated"] == ["2222.T"]
+    assert session.calls == ["https://karauri.net/2222/"]
+
+
+def test_short_all_job_force_ignores_recheck(monkeypatch, env, html):
+    database, settings = env
+    _add_stock(database, "1111")
+    database.log_fetch("karauri", "1111.T", "ok")
+    client, session = _scripted_client([("html", html)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {"force": True})
+
+    assert result["skipped"] == 0
+    assert result["updated"] == ["1111.T"]
+
+
+def test_short_all_job_skips_non_domestic_symbols(monkeypatch, env, html):
+    database, settings = env
+    _add_stock(database, "1111")
+    database.upsert_stock("AAPL", "AAPL", "Apple", "NASDAQ", "USD")
+    client, session = _scripted_client([("html", html)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {})
+
+    assert result["updated"] == ["1111.T"]
+    assert session.calls == ["https://karauri.net/1111/"]
+
+
+def test_short_all_job_can_be_cancelled(monkeypatch, env):
+    database, settings = env
+    _add_stock(database, "1111")
+    _add_stock(database, "2222")
+    ctx = FakeCtx()
+    ctx.cancel.set()
+    client, session = _scripted_client([])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    with pytest.raises(Cancelled):
+        short_all_job(database, settings)(ctx, {})
+    assert session.calls == []
+
+
+def test_short_all_job_logs_ok_in_fetch_log_on_success(monkeypatch, env, html):
+    database, settings = env
+    _add_stock(database, "1111")
+    client, _ = _scripted_client([("html", html)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    short_all_job(database, settings)(FakeCtx(), {})
+
+    logged = database.get_fetch("karauri", "1111.T")
+    assert logged["result"] == "ok"
+
+
+def test_short_all_job_respects_symbols_param(monkeypatch, env, html):
+    database, settings = env
+    _add_stock(database, "1111")
+    _add_stock(database, "2222")
+    client, session = _scripted_client([("html", html)])
+    monkeypatch.setattr(karauri, "make_client", lambda s: client)
+
+    result = short_all_job(database, settings)(FakeCtx(), {"symbols": ["1111.T"]})
+
+    assert result["updated"] == ["1111.T"]
+    assert session.calls == ["https://karauri.net/1111/"]

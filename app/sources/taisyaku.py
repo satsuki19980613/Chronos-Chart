@@ -14,7 +14,7 @@ import threading
 from datetime import datetime
 
 from ..database import Database
-from ..errors import UserFacingError
+from ..errors import Cancelled, UserFacingError
 from ..fetcher import code_from_symbol
 from .base import HttpClient, user_agent
 
@@ -200,3 +200,32 @@ def save(db: Database, rows: list[dict], symbols: list[str], fetched_at: str | N
                 skipped += 1
 
     return {"saved": saved, "skipped": skipped, "date": date_seen, "missing": missing}
+
+
+def fetch_and_save(
+    db: Database,
+    settings=None,
+    symbols: list[str] | None = None,
+    cancel: threading.Event | None = None,
+    client: HttpClient | None = None,
+) -> dict:
+    """`zandaka.csv` を1回取得してパースし、登録銘柄の行だけを保存する（ブロッキング。SPEC §2.3.2）。
+
+    1リクエストで終わるためジョブにしない。`symbols` を指定しなければ登録銘柄のうち国内銘柄
+    （`.T`）を使う。失敗したら `fetch_log` に記録して例外を投げ直す（中断 `Cancelled` は記録しない）。
+    """
+    if client is None:
+        client = make_client(settings)
+    if symbols is None:
+        symbols = [s["symbol"] for s in db.list_stocks() if s["symbol"].endswith(".T")]
+    try:
+        content = fetch_zandaka(client, cancel=cancel)
+        rows = parse(content)
+        result = save(db, rows, symbols)
+    except Cancelled:
+        raise
+    except Exception as exc:
+        db.log_fetch(SOURCE, "zandaka", f"error:{exc}")
+        raise
+    db.log_fetch(SOURCE, "zandaka", "ok")
+    return result

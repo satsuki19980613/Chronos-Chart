@@ -85,7 +85,7 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P2（需給データの取得） |
-| **次にやること** | P2-6（取得UI: 空売りの一括取得ジョブ・単一銘柄・日証金の手動取得）。その後 P2-7（自動更新への組み込み）で P2 完了 |
+| **次にやること** | P2-7（自動更新への組み込み）。これで P2 完了。そのあと P3-1（dashboard payload の拡張）へ |
 | **リポジトリ状態** | 作業ブランチは **`feature/p2-supply`**（`main` から分岐）。`main` は `origin/main` を追跡し P1 完了時点まで push 済み。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **外部アクセスの消費** | 2026-09-20 に P2-1・P2-3 の採取を実施済み（karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回）。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらのサイトへはアクセスしない**。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` |
 | **動作確認** | 2026-09-20、P1 完了時点で `.venv\Scripts\python.exe -m pytest` は **337 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバー（ブラウザ）でジョブの進捗・中断、起動時の自動更新（実際に yfinance から2銘柄を更新）、設定タブの保存・検証・キーの表示と削除を確認済み。pywebview のウィンドウ（`start.bat`）での起動確認をユーザーに依頼し、「全て問題ない」との回答（2026-09-20） |
@@ -143,7 +143,7 @@
 | P2-3 | `DONE` | **日証金の列定義の確定** | `zandaka.csv` `meigara.csv` を各1回取得して `tests/fixtures/real/` に置き、`cp932` で読んで全列名・速報/確報の区分値・区分列の意味を **SPEC §2.3.1 と §3 に追記**（§9-1 を解消）。合成 CSV を作る。※固定名・最新日のみ・約36列であることはレビューで確認済み | P0-6 | `docs/SPEC.md` `tests/fixtures/` |
 | P2-4 | `DONE` | 貸借取引残高の取得とパース | SPEC §2.3。ヘッダ名で列を引く、**東証の行だけを採用**、登録銘柄の行だけ保存、確報が速報を上書き（逆はしない）、貸借銘柄でない場合はエラーにしない。`test_taisyaku.py` | P2-3 P1-5 | `sources/taisyaku.py` |
 | P2-5 | `DONE` | 空売り残高合計の算出 | SPEC §2.2.3。`holder_id` ごとの最新採用、消失の二重条件、該当者なしで 0。`test_short_totals.py` | P2-2 | `sources/karauri.py` |
-| P2-6 | `TODO` | 取得UI | 空売りの一括取得を `short_all` ジョブで。実行前に「対象銘柄数 × 間隔」を提示して確認、進捗と中断。`scrape_contact` 未設定なら実行不可。単一銘柄の取得、日証金の手動取得 | P2-2 P2-4 P1-6 | `api.py` `app.js` |
+| P2-6 | `DONE` | 取得UI | 空売りの一括取得を `short_all` ジョブで。実行前に「対象銘柄数 × 間隔」を提示して確認、進捗と中断。`scrape_contact` 未設定なら実行不可。単一銘柄の取得、日証金の手動取得 | P2-2 P2-4 P1-6 | `api.py` `app.js` |
 | P2-7 | `TODO` | 自動更新への組み込み（需給） | SPEC §2.8.2 の順2・順4。日証金は既定で含める。空売りは `auto_update_short`（既定 false）のときだけ、`short_recheck_hours` を守る。`test_autoupdate.py` に追加 | P2-6 P1-7 | `autoupdate.py` |
 
 ### P3 — 需給のチャート表示
@@ -262,7 +262,11 @@
   - `app/sources/karauri.py`: `make_client(settings)` / `fetch_html(client, code, cancel=None)` / `parse(html)` /
     `compute_totals(rows)` / `save(db, symbol, rows) -> {"rows", "dates", "since"}`
   - `app/sources/taisyaku.py`: `make_client(settings=None)` / `fetch_zandaka(client, cancel=None)` / `parse(content: bytes)` /
-    `save(db, rows, symbols, fetched_at=None) -> {"saved", "skipped", "date", "missing"}`
+    `save(db, rows, symbols, fetched_at=None) -> {"saved", "skipped", "date", "missing"}` /
+    `fetch_and_save(db, settings=None, symbols=None, cancel=None, client=None)`（取得〜保存。1リクエストなのでブロッキング）
+  - karauri の取得の入口: `select_targets(db, settings, symbols=None, force=False)` / `estimate(db, settings, symbols=None)` /
+    `fetch_one(db, settings, symbol, cancel=None, client=None)` / `short_all_job(db, settings)`（`jobs.register("short_all", ...)` 用）
+  - **P2-7 はこれらを呼ぶこと**（取得ロジックを autoupdate 側に書き直さない）
 - `.gitattributes` は既定で `* text=auto eol=lf`。**改行をそのまま保ちたいフィクスチャは `-text` を明示する**
   （日証金の合成 CSV は cp932・CRLF。放っておくと LF に正規化されて実物と構造が変わる。`test_taisyaku.py` が検知する）
 - `tests/test_real_fixtures.py` は `tests/fixtures/real/` に実物があるときだけ走る（無ければ skip）。
