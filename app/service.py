@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 from collections import defaultdict
 from pathlib import Path
@@ -153,6 +154,10 @@ class StockService:
 
         signals = ind.detect_signals(indicators)
         paths = csv_paths(self.csv_dir, symbol)
+        dates = prices["date"].tolist()
+        with self.db.connect() as conn:
+            short = _short_points(conn, symbol, dates)
+            taisyaku = _taisyaku_points(conn, symbol, dates)
 
         return {
             "stock": stock,
@@ -160,7 +165,7 @@ class StockService:
             "cards": ind.evaluate_latest(prices, indicators),
             "signals": list(reversed(signals[-12:])),
             "chart": {
-                "dates": prices["date"].tolist(),
+                "dates": dates,
                 "open": _clean(prices["open"]),
                 "high": _clean(prices["high"]),
                 "low": _clean(prices["low"]),
@@ -170,6 +175,8 @@ class StockService:
                 "params": ind.PARAMS,
                 "future_cloud": _future_cloud(prices),
                 "signals": signals,
+                "short": short,
+                "taisyaku": taisyaku,
             },
             "table": _table(prices, indicators, limit=60),
             "csv": {k: str(p) for k, p in paths.items()},
@@ -205,6 +212,74 @@ def _future_cloud(prices: pd.DataFrame) -> list[dict]:
     future_dates = pd.bdate_range(last + pd.Timedelta(days=1), periods=ind.ICHIMOKU_SHIFT)
     cloud = ind.ichimoku_future_cloud(prices)
     return [{**c, "date": d.strftime("%Y-%m-%d")} for c, d in zip(cloud, future_dates)]
+
+
+def _short_points(conn: sqlite3.Connection, symbol: str, dates: list[str]) -> dict:
+    """空売り残高合計（short_totals）をチャート用の点列に整形する（SPEC §2.5.2）。
+
+    ローソク足に存在する日付だけを残し、最後の報告が最新の足より前なら
+    据え置きの点（carried=True）を1つ足して線を延ばす。需給データなので
+    AI 向けの経路（ai_export.py / app/ai/）には一切渡さないこと。
+    """
+    rows = conn.execute(
+        "SELECT date, total_ratio, total_qty, holders FROM short_totals WHERE symbol = ? ORDER BY date",
+        (symbol,),
+    ).fetchall()
+    date_set = set(dates)
+    points = [
+        {
+            "date": row["date"],
+            "ratio": row["total_ratio"],
+            "qty": row["total_qty"],
+            "holders": row["holders"],
+            "carried": False,
+        }
+        for row in rows
+        if row["date"] in date_set
+    ]
+    if not points:
+        return {"available": False, "reason": "0.5% 以上の報告なし、または未取得", "points": []}
+
+    if dates and points[-1]["date"] < dates[-1]:
+        last = points[-1]
+        points.append(
+            {
+                "date": dates[-1],
+                "ratio": last["ratio"],
+                "qty": last["qty"],
+                "holders": last["holders"],
+                "carried": True,
+            }
+        )
+    return {"available": True, "reason": None, "points": points}
+
+
+def _taisyaku_points(conn: sqlite3.Connection, symbol: str, dates: list[str]) -> dict:
+    """貸借取引残高（margin_balances）をチャート用の点列に整形する（SPEC §2.5.2）。
+
+    ローソク足に存在する日付だけを残す。日次データなので据え置きは行わない。
+    欠測日は欠測のまま渡し、線を切るのは画面側に任せる。
+    """
+    rows = conn.execute(
+        "SELECT date, yushi_balance, kashi_balance, net_balance, kind "
+        "FROM margin_balances WHERE symbol = ? ORDER BY date",
+        (symbol,),
+    ).fetchall()
+    date_set = set(dates)
+    points = [
+        {
+            "date": row["date"],
+            "yushi": row["yushi_balance"],
+            "kashi": row["kashi_balance"],
+            "net": row["net_balance"],
+            "kind": row["kind"],
+        }
+        for row in rows
+        if row["date"] in date_set
+    ]
+    if not points:
+        return {"available": False, "reason": "貸借銘柄ではない、または未取得", "points": []}
+    return {"available": True, "reason": None, "points": points}
 
 
 def _table(prices: pd.DataFrame, indicators: pd.DataFrame, limit: int) -> dict:

@@ -105,6 +105,119 @@ def test_dashboard_payload_is_json_serializable(env):
     assert data["table"]["rows"][0]["date"] == data["chart"]["dates"][-1]
 
 
+def test_dashboard_chart_keys_unchanged(env):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    data = service.dashboard("7203.T")
+
+    existing_keys = {
+        "dates", "open", "high", "low", "close", "volume",
+        "indicators", "params", "future_cloud", "signals",
+    }
+    assert set(data["chart"].keys()) == existing_keys | {"short", "taisyaku"}
+
+
+def test_dashboard_short_unavailable_when_no_rows(env):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    data = service.dashboard("7203.T")
+
+    assert data["chart"]["short"] == {
+        "available": False,
+        "reason": "0.5% 以上の報告なし、または未取得",
+        "points": [],
+    }
+
+
+def test_dashboard_short_points_filter_and_carry(env):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    prices = service.db.get_prices("7203.T")
+    d0, d1, d_last = prices["date"].iloc[0], prices["date"].iloc[5], prices["date"].iloc[-1]
+    missing_date = "2099-01-01"  # 足の無い日付。捨てられるはず
+
+    with service.db.write() as conn:
+        # わざと日付の降順で入れて、出力が昇順に並び替わることを確認する
+        conn.executemany(
+            "INSERT INTO short_totals (symbol, date, total_ratio, total_qty, holders) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("7203.T", missing_date, 9.9, 1, 1),
+                ("7203.T", d1, 2.5, 100000, 3),
+                ("7203.T", d0, 1.0, 50000, 1),
+            ],
+        )
+
+    data = service.dashboard("7203.T")
+    short = data["chart"]["short"]
+
+    assert short["available"] is True and short["reason"] is None
+    assert [p["date"] for p in short["points"]] == [d0, d1, d_last]
+    assert short["points"][0] == {"date": d0, "ratio": 1.0, "qty": 50000, "holders": 1, "carried": False}
+    assert short["points"][1]["carried"] is False
+    # 最後の報告日 (d1) が最新の足 (d_last) より前なので、据え置きの点が1つ足される
+    carried = short["points"][-1]
+    assert carried == {"date": d_last, "ratio": 2.5, "qty": 100000, "holders": 3, "carried": True}
+
+
+def test_dashboard_short_no_carry_when_last_report_is_latest_bar(env):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    d_last = service.db.get_prices("7203.T")["date"].iloc[-1]
+
+    with service.db.write() as conn:
+        conn.execute(
+            "INSERT INTO short_totals (symbol, date, total_ratio, total_qty, holders) VALUES (?, ?, ?, ?, ?)",
+            ("7203.T", d_last, 3.3, 200, 2),
+        )
+
+    short = service.dashboard("7203.T")["chart"]["short"]
+    assert len(short["points"]) == 1
+    assert short["points"][0]["carried"] is False
+
+
+def test_dashboard_taisyaku_unavailable_when_no_rows(env):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    data = service.dashboard("7203.T")
+
+    assert data["chart"]["taisyaku"] == {
+        "available": False,
+        "reason": "貸借銘柄ではない、または未取得",
+        "points": [],
+    }
+
+
+def test_dashboard_taisyaku_points_no_carry_and_gaps_kept(env):
+    service, *_ = env
+    service.register("7203.T", "Toyota")
+    prices = service.db.get_prices("7203.T")
+    d0, d1, d2 = prices["date"].iloc[0], prices["date"].iloc[1], prices["date"].iloc[3]  # index2 は欠測にする
+    missing_date = "2099-01-01"
+
+    with service.db.write() as conn:
+        conn.executemany(
+            "INSERT INTO margin_balances "
+            "(symbol, date, kind, yushi_balance, kashi_balance, net_balance, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("7203.T", d0, "final", 1000, 500, 500, "2026-01-01T00:00:00"),
+                ("7203.T", d1, "prelim", 1100, 520, 580, "2026-01-02T00:00:00"),
+                ("7203.T", d2, "final", 900, 600, 300, "2026-01-04T00:00:00"),
+                ("7203.T", missing_date, "final", 1, 1, 0, "2026-01-05T00:00:00"),
+            ],
+        )
+
+    taisyaku = service.dashboard("7203.T")["chart"]["taisyaku"]
+
+    assert taisyaku["available"] is True and taisyaku["reason"] is None
+    assert [p["date"] for p in taisyaku["points"]] == [d0, d1, d2]  # 昇順・欠測日は埋めない・missing_date は捨てる
+    assert [p["kind"] for p in taisyaku["points"]] == ["final", "prelim", "final"]
+    assert all("carried" not in p for p in taisyaku["points"])  # 貸借には据え置きを入れない
+    assert taisyaku["points"][0] == {"date": d0, "yushi": 1000, "kashi": 500, "net": 500, "kind": "final"}
+    # 最新の足の日付は取得していないので、据え置きの点は増えない
+    assert taisyaku["points"][-1]["date"] != prices["date"].iloc[-1]
+
+
 def test_delete_removes_db_rows_and_csv(env):
     service, _, _, tmp_path = env
     service.register("7203.T", "Toyota")
