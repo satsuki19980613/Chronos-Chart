@@ -16,10 +16,13 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from app.api import Api
-from app.config import CSV_DIR, DB_PATH, WEB_DIR
+from app.autoupdate import AutoUpdater
+from app.config import CSV_DIR, DATA_DIR, DB_PATH, WEB_DIR
 from app.database import Database
 from app.fetcher import YahooFetcher
+from app.jobs import JobManager, selftest_job
 from app.service import StockService
+from app.settings import Settings
 
 
 def make_handler(api: Api):
@@ -67,7 +70,11 @@ def main() -> None:
     db = Database(DB_PATH)
     service = StockService(db, YahooFetcher(), CSV_DIR)
     service.rebuild_all(only_missing_csv=not db.init_schema())
-    api = Api(service)
+    jobs = JobManager()
+    settings = Settings(db, data_dir=DATA_DIR)
+    jobs.register("auto_update", AutoUpdater(db, service, settings).run)
+    jobs.register("selftest", selftest_job)
+    api = Api(service, jobs, settings)
 
     handler = partial(make_handler(api), directory=str(WEB_DIR))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)

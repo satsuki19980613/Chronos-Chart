@@ -44,6 +44,8 @@
     setTimeout(() => el.remove(), ms);
   }
 
+  window.App = { toast }; // 他の画面スクリプト（settings.js など）から使う
+
   async function withBusy(text, fn) {
     if (!$("busy").hidden) return undefined; // 処理中の二重実行（Enter 連打など）を防ぐ
     $("busy-text").textContent = text;
@@ -71,6 +73,7 @@
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${name}`));
     if (name === "dashboard") openDashboard(state.currentSymbol);
     if (name === "export") loadExportFiles();
+    if (name === "settings") SettingsView.load();
   }
 
   // ---------- 登録画面 ----------
@@ -446,6 +449,32 @@
     $("export-run").addEventListener("click", runExport);
   }
 
+  // 起動時の自動更新（SPEC §2.8.2）。バックグラウンドで走り、失敗しても操作を妨げない。
+  // 「起動時の1回だけ」は Python 側が保証するので、画面の再読込で呼んでも二重には走らない
+  async function autoUpdate() {
+    if (!state.stocks.length || Jobs.isRunning("auto_update")) return;
+    let job;
+    try {
+      job = await Jobs.run("auto_update");
+    } catch (err) {
+      toast(`自動更新に失敗しました: ${err.message}`, "warn", 6000);
+      return;
+    }
+    if (job.state === "cancelled") {
+      toast("自動更新を中断しました");
+    } else if (!job.result || job.result.skipped) {
+      return;
+    } else if (!job.result.changed && !job.result.failed) {
+      return; // すべて取得済みで何もしなかったときは知らせない
+    } else {
+      toast(`自動更新: ${job.result.summary}`, job.result.failed ? "warn" : "info", 6000);
+    }
+    await refreshStocks();
+    const updated = job.result?.updated_symbols || [];
+    const onDashboard = $("view-dashboard").classList.contains("is-active");
+    if (onDashboard && updated.includes(state.currentSymbol)) await openDashboard(state.currentSymbol);
+  }
+
   async function init() {
     bind();
     renderChips();
@@ -456,6 +485,8 @@
       return;
     }
     await refreshStocks();
+    await Jobs.resume().catch(() => {});
+    autoUpdate();
   }
 
   init();

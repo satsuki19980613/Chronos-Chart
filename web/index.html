@@ -16,7 +16,14 @@
       <button class="tab is-active" role="tab" data-tab="register" aria-selected="true">登録</button>
       <button class="tab" role="tab" data-tab="dashboard" aria-selected="false">ダッシュボード</button>
       <button class="tab" role="tab" data-tab="export" aria-selected="false">出力</button>
+      <button class="tab" role="tab" data-tab="settings" aria-selected="false">設定</button>
     </nav>
+    <div class="job-status" id="job-status" hidden>
+      <span class="spinner small"></span>
+      <span class="job-label" id="job-label"></span>
+      <span class="job-bar"><span id="job-bar-fill"></span></span>
+      <button class="btn btn-ghost btn-sm" id="job-cancel">中断</button>
+    </div>
     <div class="header-actions">
       <button class="btn btn-ghost" id="open-csv">CSVフォルダを開く</button>
     </div>
@@ -210,6 +217,115 @@
         <p class="empty" id="export-files-empty">まだ出力したファイルはありません。</p>
       </div>
     </section>
+
+    <!-- ================= 設定画面 ================= -->
+    <section class="view" id="view-settings" role="tabpanel">
+      <div id="settings-warnings"></div>
+      <div class="settings-grid">
+        <div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>起動時の自動更新</h2>
+              <p class="hint">アプリを起動するたびに1回だけ、登録銘柄のデータをバックグラウンドで更新します。開いたままでも再実行はしません。</p>
+            </div>
+            <label class="check-row"><input type="checkbox" data-setting="auto_update_on_start"> 起動時に自動更新する（株価・貸借取引残高・開示）</label>
+            <label class="check-row"><input type="checkbox" data-setting="auto_update_short"> 空売り残高（karauri.net）も自動更新に含める</label>
+            <p class="hint">空売り残高は「銘柄数 × 間隔」の時間がかかり、個人運営のサイトへ毎日アクセスすることになります。既定はオフです。</p>
+            <div class="field inline">
+              <label class="field-label" for="set-auto-interval">前回の取得からこの時間内はスキップ（分）</label>
+              <input class="input input-num" id="set-auto-interval" type="number" min="0" data-setting="auto_update_min_interval_min">
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>EDINET（法定開示）</h2>
+              <p class="hint">API キーは各自で取得する必要があります（無料）。キーはこの PC の資格情報ストアに保存され、ファイルには書き込まれません。</p>
+            </div>
+            <div class="secret-row" data-secret="edinet_api_key">
+              <span class="field-label">API キー</span>
+              <code class="secret-current"></code>
+              <input class="input" type="password" autocomplete="off" placeholder="新しいキーを入力（変更しない場合は空のまま）">
+              <button class="btn btn-sm" data-act="reveal">表示</button>
+              <button class="btn btn-sm btn-danger" data-act="clear">削除</button>
+            </div>
+            <ol class="steps">
+              <li><a href="https://api.edinet-fsa.go.jp/api/auth/index.aspx?mode=1" target="_blank" rel="noopener">API キー発行ページ</a>でサインアップ（メールアドレス登録）</li>
+              <li>CAPTCHA と確認コードの入力</li>
+              <li>パスワード設定（12文字以上・英大小／数字／記号から3種以上）</li>
+              <li><b>多要素認証（MFA）</b>: 電話番号を登録し、SMS または音声通話で確認</li>
+              <li>連絡先（所属・氏名・電話番号）を入力すると API キーが表示されます</li>
+            </ol>
+            <p class="hint">2年間利用がないキーは自動削除されます。取得したデータを利用する際は出典（EDINET）の明記が必要です。</p>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Gemini（AI 分析）</h2>
+              <p class="hint">AI 分析は手動実行のみです。送信するのは株価・テクニカル指標・EDINET の開示一覧だけで、需給データは送りません。</p>
+            </div>
+            <div class="secret-row" data-secret="gemini_api_key">
+              <span class="field-label">API キー</span>
+              <code class="secret-current"></code>
+              <input class="input" type="password" autocomplete="off" placeholder="新しいキーを入力（変更しない場合は空のまま）">
+              <button class="btn btn-sm" data-act="reveal">表示</button>
+              <button class="btn btn-sm btn-danger" data-act="clear">削除</button>
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-gemini-model">モデル名</label>
+              <input class="input" id="set-gemini-model" type="text" data-setting="gemini_model" placeholder="AI Studio で使えるモデル名を入力">
+            </div>
+            <div class="field-grid">
+              <div class="field"><label class="field-label" for="set-rpm">RPM（1分あたりリクエスト）</label><input class="input input-num" id="set-rpm" type="number" min="0" data-setting="gemini_rpm"></div>
+              <div class="field"><label class="field-label" for="set-tpm">TPM（1分あたりトークン）</label><input class="input input-num" id="set-tpm" type="number" min="0" data-setting="gemini_tpm"></div>
+              <div class="field"><label class="field-label" for="set-rpd">RPD（1日あたりリクエスト）</label><input class="input input-num" id="set-rpd" type="number" min="0" data-setting="gemini_rpd"></div>
+              <div class="field"><label class="field-label" for="set-maxout">出力トークン上限</label><input class="input input-num" id="set-maxout" type="number" min="256" data-setting="gemini_max_output_tokens"></div>
+              <div class="field"><label class="field-label" for="set-thinking">thinking の予算</label><input class="input input-num" id="set-thinking" type="number" min="0" data-setting="gemini_thinking_budget"></div>
+            </div>
+            <p class="hint">公式ドキュメントに無料枠の数値表はありません。<a href="https://aistudio.google.com/rate-limit" target="_blank" rel="noopener">AI Studio のレート制限ページ</a>で自分のアカウントの値を確認して入力してください。RPM・TPM・RPD のいずれかが 0 の間は AI 機能は無効です。</p>
+            <p class="hint">上限は API キー単位ではなく<b>プロジェクト単位</b>です。同じプロジェクトを他のツールでも使っている場合、本ツールの残量表示より早く上限に達します。</p>
+            <p class="hint">無料枠では、送信した内容が Google の製品改善に使われ、人間のレビュアーが読む場合があります。</p>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>空売り残高の取得（karauri.net）</h2>
+              <p class="hint">相手サーバーに負荷をかけないよう、間隔を空けて1件ずつ取得します。</p>
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-contact">連絡先（メールアドレスなど）</label>
+              <input class="input" id="set-contact" type="text" data-setting="scrape_contact" placeholder="未設定の間は取得を実行しません">
+              <p class="hint"><b>この連絡先は karauri.net へのリクエストごとに User-Agent として送信されます。</b>自動取得であることを名乗るためのもので、ブラウザの偽装はしません。</p>
+            </div>
+            <div class="field-grid">
+              <div class="field"><label class="field-label" for="set-interval">リクエスト間隔（秒・下限 5）</label><input class="input input-num" id="set-interval" type="number" min="5" data-setting="scrape_interval_sec"></div>
+              <div class="field"><label class="field-label" for="set-recheck">同じ銘柄を再取得しない時間（時間）</label><input class="input input-num" id="set-recheck" type="number" min="1" data-setting="short_recheck_hours"></div>
+            </div>
+          </div>
+
+          <div class="settings-actions">
+            <button class="btn btn-primary" id="settings-save">設定を保存</button>
+            <span class="toolbar-note" id="settings-saved"></span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h2>データの出典と利用上の制限</h2></div>
+          <dl class="terms">
+            <dt>株価 — Yahoo! Finance（yfinance）</dt>
+            <dd>非公式ライブラリによる取得です。個人の分析用途に限ってください。</dd>
+            <dt>空売り残高 — karauri.net（元データは JPX 公表）</dt>
+            <dd>合計値は本ツールが算出したもので、サイトの公表値ではありません。0.5% 未満のポジションは公表されません。</dd>
+            <dt>貸借取引残高 — 日本証券金融</dt>
+            <dd>私的利用の範囲を超える利用、第三者への提供は禁止されています。貸借銘柄のみが対象で、本ツールで取得を始めた日以降のデータしかありません。</dd>
+            <dt>法定開示 — EDINET（金融庁）</dt>
+            <dd>利用時は出典の明記が必要です。決算短信・業績修正（TDnet）は含まれません。</dd>
+          </dl>
+          <p class="hint"><b>取得したデータを再配布・公開しないでください。</b>需給データ（空売り残高・貸借取引残高）は画面表示のみに使い、エクスポート・AI への送信・レポートには含めません。</p>
+          <p class="hint">別の PC へ移すときは <code>data</code> フォルダをまるごとコピーし、API キーを入力し直してください。貸借取引残高は取り直せません。</p>
+        </div>
+      </div>
+    </section>
   </main>
 
   <div class="busy" id="busy" hidden>
@@ -221,6 +337,8 @@
   <script src="js/bridge.js"></script>
   <script src="js/format.js"></script>
   <script src="js/chart.js"></script>
+  <script src="js/jobs.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/settings.js"></script>
 </body>
 </html>

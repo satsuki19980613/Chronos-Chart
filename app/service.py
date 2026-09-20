@@ -51,6 +51,7 @@ class StockService:
                     self.db.delete_stock(symbol)
                     remove_csv(self.csv_dir, symbol)
                     raise
+            self.db.log_fetch("yahoo", symbol)
             log.info("registered %s (%d rows)", symbol, len(prices))
             return {"stock": self.db.get_stock(symbol), "added": len(prices), "warnings": warnings}
         return self.update(symbol)
@@ -77,6 +78,8 @@ class StockService:
                 else:
                     self.db.upsert_prices(symbol, prices)
             warnings = self._rebuild(symbol)
+            # 取得の記録。last_updated は起動時の再生成でも変わるので、自動更新のスキップ判定には使わない
+            self.db.log_fetch("yahoo", symbol)
 
         after = len(self.db.get_prices(symbol))
         return {"stock": self.db.get_stock(symbol), "added": after - before, "warnings": warnings}

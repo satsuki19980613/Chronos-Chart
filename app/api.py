@@ -14,7 +14,9 @@ from functools import wraps
 from pathlib import Path
 
 from .fetcher import FetchError
+from .jobs import JobManager
 from .service import StockService
+from .settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -34,9 +36,11 @@ def _response(func):
 
 
 class Api:
-    def __init__(self, service: StockService):
+    def __init__(self, service: StockService, jobs: JobManager | None = None, settings: Settings | None = None):
         # 先頭が _ の属性は JS に公開されない
         self._service = service
+        self._jobs = jobs or JobManager()
+        self._settings = settings
 
     @_response
     def search(self, query: str):
@@ -74,6 +78,45 @@ class Api:
     @_response
     def list_exports(self):
         return self._service.list_exports()
+
+    # ---------- 設定 ----------
+    @_response
+    def get_settings(self):
+        """API キーはマスク済み。平文は reveal_secret でのみ返す。"""
+        return self._require_settings().public_view()
+
+    @_response
+    def save_settings(self, values: dict):
+        settings = self._require_settings()
+        settings.update(values)
+        return settings.public_view()
+
+    @_response
+    def reveal_secret(self, key: str):
+        """設定画面の「表示」ボタン用。ユーザーの明示操作でのみ呼ぶこと。"""
+        return self._require_settings().get_secret(key)
+
+    def _require_settings(self) -> Settings:
+        if self._settings is None:
+            raise ValueError("設定機能が初期化されていません")
+        return self._settings
+
+    # ---------- ジョブ（長時間処理）----------
+    @_response
+    def start_job(self, kind: str, params: dict | None = None):
+        return self._jobs.start(kind, params)
+
+    @_response
+    def job_status(self, job_id: str):
+        return self._jobs.status(job_id)
+
+    @_response
+    def cancel_job(self, job_id: str):
+        return self._jobs.cancel(job_id)
+
+    @_response
+    def active_jobs(self):
+        return self._jobs.active()
 
     @_response
     def open_csv_folder(self):
