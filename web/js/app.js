@@ -456,6 +456,7 @@
       return;
     }
     await refreshStocks();
+    Jobs.resume().catch(() => {});
   }
 
   init();

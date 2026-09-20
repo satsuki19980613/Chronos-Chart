@@ -14,6 +14,7 @@ from functools import wraps
 from pathlib import Path
 
 from .fetcher import FetchError
+from .jobs import JobManager
 from .service import StockService
 
 log = logging.getLogger(__name__)
@@ -34,9 +35,10 @@ def _response(func):
 
 
 class Api:
-    def __init__(self, service: StockService):
+    def __init__(self, service: StockService, jobs: JobManager | None = None):
         # 先頭が _ の属性は JS に公開されない
         self._service = service
+        self._jobs = jobs or JobManager()
 
     @_response
     def search(self, query: str):
@@ -74,6 +76,23 @@ class Api:
     @_response
     def list_exports(self):
         return self._service.list_exports()
+
+    # ---------- ジョブ（長時間処理）----------
+    @_response
+    def start_job(self, kind: str, params: dict | None = None):
+        return self._jobs.start(kind, params)
+
+    @_response
+    def job_status(self, job_id: str):
+        return self._jobs.status(job_id)
+
+    @_response
+    def cancel_job(self, job_id: str):
+        return self._jobs.cancel(job_id)
+
+    @_response
+    def active_jobs(self):
+        return self._jobs.active()
 
     @_response
     def open_csv_folder(self):

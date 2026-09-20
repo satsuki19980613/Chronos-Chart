@@ -19,6 +19,7 @@ from app.api import Api
 from app.config import CSV_DIR, DB_PATH, WEB_DIR
 from app.database import Database
 from app.fetcher import YahooFetcher
+from app.jobs import JobManager, selftest_job
 from app.service import StockService
 
 
@@ -67,7 +68,9 @@ def main() -> None:
     db = Database(DB_PATH)
     service = StockService(db, YahooFetcher(), CSV_DIR)
     service.rebuild_all(only_missing_csv=not db.init_schema())
-    api = Api(service)
+    jobs = JobManager()
+    jobs.register("selftest", selftest_job)
+    api = Api(service, jobs)
 
     handler = partial(make_handler(api), directory=str(WEB_DIR))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)

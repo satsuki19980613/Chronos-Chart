@@ -17,6 +17,7 @@ from app.api import Api
 from app.config import CSV_DIR, DB_PATH, LOG_DIR, WEB_DIR
 from app.database import Database
 from app.fetcher import YahooFetcher
+from app.jobs import JobManager, selftest_job
 from app.service import StockService
 
 
@@ -46,7 +47,10 @@ def main() -> None:
     rebuilt = service.rebuild_all(only_missing_csv=not schema_changed)
     if rebuilt:
         logging.getLogger(__name__).info("recomputed indicators/CSV for %d stocks", rebuilt)
-    api = Api(service)
+    jobs = JobManager()
+    if args.debug:
+        jobs.register("selftest", selftest_job)
+    api = Api(service, jobs)
 
     webview.create_window(
         f"Chronos Chart {__version__}",

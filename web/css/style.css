@@ -76,6 +76,21 @@ button, input, select { font: inherit; color: inherit; }
 }
 .header-actions { margin-left: auto; }
 
+/* ---------- バックグラウンド処理の進捗（ヘッダ）---------- */
+.job-status {
+  display: flex; align-items: center; gap: 10px;
+  margin-left: auto; min-width: 0;
+  color: var(--muted); font-size: 12.5px;
+}
+.job-status[hidden] { display: none; }
+.job-status:not([hidden]) + .header-actions { margin-left: 0; }
+.job-label { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-bar { width: 120px; height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.job-bar > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+.job-bar.is-indeterminate > span { width: 35%; animation: job-slide 1.2s ease-in-out infinite; }
+@keyframes job-slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.spinner.small { width: 13px; height: 13px; }
+
 /* ---------- layout ---------- */
 main { padding: 20px 24px 40px; max-width: 1680px; margin: 0 auto; }
 .view { display: none; }
