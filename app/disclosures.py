@@ -183,10 +183,73 @@ def _parse_int(value, default: int | None) -> int | None:
         return default
 
 
+CODE_LIST_MAX_AGE_DAYS = 7  # SPEC §2.4.1a: これより古ければ期限切れとして取り直す
+
+
+def ensure_code_list(
+    db,
+    settings,
+    *,
+    cancel=None,
+    client=None,
+    max_age_days: int = CODE_LIST_MAX_AGE_DAYS,
+    now: datetime | None = None,
+) -> dict:
+    """EDINET コードリスト（`edinet_codes`）が古い・空なら取り直す（SPEC §2.4.1a・§2.4.3）。
+
+    `disclosures_job` の先頭で毎回呼ぶ。取り直す条件は次のいずれか（`reason` に入れる）:
+
+    - `"missing"`: `fetch_log(source='edinet_codes', key='list')` の記録が無い、または
+      `result` が `"ok"` でない（前回失敗している）
+    - `"stale"`: `fetched_at`（`_fetched_at_of` で読む）が `max_age_days` 日より古い、
+      または壊れていて読めない
+    - `"empty_table"`: 記録は新しいのに `edinet_codes` が空。本来ここには来ないはずだが、
+      今回の不具合（`fetch_and_save_code_list` がどこからも呼ばれずテーブルが0件のまま）のように
+      記録と中身がずれることがあるので、**期限内でも中身が空なら取り直す**
+      （記録だけ見て「新しいから大丈夫」と判断すると、空のまま二度と埋まらなくなる）
+    - 上記のどれでもなければ `"fresh"` で、取得しない
+
+    取得中の例外は投げずに `error` に文字列化して返す（`Cancelled` だけはそのまま投げ直す）。
+    コードリストが無くても `secCode` による補助突合は効くので、ここで例外を投げて
+    書類一覧の取得自体を止めたくないため。
+    """
+    now_ = now if now is not None else datetime.now()
+    row = db.get_fetch("edinet_codes", "list")
+    with db.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) AS n FROM edinet_codes").fetchone()["n"]
+    was_empty = count == 0
+
+    if row is None or row.get("result") != "ok":
+        reason = "missing"
+    else:
+        fetched_at = _fetched_at_of(row)
+        if fetched_at is None or now_ - fetched_at > timedelta(days=max_age_days):
+            reason = "stale"
+        elif was_empty:
+            reason = "empty_table"
+        else:
+            reason = "fresh"
+
+    if reason == "fresh":
+        return {"fetched": False, "was_empty": was_empty, "saved": 0, "reason": reason, "error": None}
+
+    try:
+        result = edinet.fetch_and_save_code_list(db, settings, cancel=cancel, client=client)
+    except Cancelled:
+        raise
+    except Exception as exc:
+        log.warning("EDINET コードリストの取得に失敗しました（理由: %s）: %s", reason, exc)
+        return {"fetched": False, "was_empty": was_empty, "saved": 0, "reason": reason, "error": str(exc)}
+
+    return {"fetched": True, "was_empty": was_empty, "saved": result["saved"], "reason": reason, "error": None}
+
+
 def disclosures_job(db, settings, base_dir: Path | None = None) -> Callable[[JobContext, dict], dict]:
     """`jobs.register("disclosures", disclosures_job(db, settings))` に渡すジョブ関数を組み立てる。
 
     - `edinet_api_key` 未設定なら `UserFacingError`
+    - API キーの確認の直後に `ensure_code_list` を呼び、コードリストが古い・空なら取り直す
+      （突合の主経路が EDINET コード基準なので、書類一覧より先に済ませておく。失敗しても続行する）
     - 対象日は `pending_dates`（新しい日付から古い日付へ）
     - HTTP 401 / 403 / 429 を受けたらその時点でジョブを中止する（`aborted = "forbidden"`）
     - それ以外の例外はその日付を `errors` に積んで次へ進み、連続 `_MAX_CONSECUTIVE_FAILURES` 回で中止する
@@ -198,6 +261,11 @@ def disclosures_job(db, settings, base_dir: Path | None = None) -> Callable[[Job
         api_key = settings.get_secret("edinet_api_key")
         if not api_key:
             raise UserFacingError("EDINET の API キーが設定されていません。設定タブで登録してください")
+
+        # `client` は渡さない。コードリスト（disclosure2dl.edinet-fsa.go.jp）と書類一覧
+        # （api.edinet-fsa.go.jp）はホストが違うが、`HttpClient` はソース名（"edinet"）で
+        # レート制限の間隔を共有するので、ここで別クライアントを使い回す必要はない
+        code_list_result = ensure_code_list(db, settings, cancel=ctx.cancel)
 
         max_days = _parse_int(params.get("max_days"), None)
         redo_days = _parse_int(params.get("redo_days"), 0)
@@ -251,11 +319,22 @@ def disclosures_job(db, settings, base_dir: Path | None = None) -> Callable[[Job
 
         # SPEC §2.4.2: 中断・エラーの別を問わず、取得できた日付はここで必ず走査する。
         # 走査しないとキャッシュと DB がずれ、その日付は確定済みなので二度と走査されない。
+        #
+        # コードリストが「空から埋まった」直後（fetched=True・was_empty=True）は、空のまま
+        # 保存された既存キャッシュに大量保有等の突合が1件も入っていない可能性があるので、
+        # 今回取得した日付だけでなく全キャッシュ日付（dates=None）を再走査して埋め直す。
+        # ただし中断されたときは、全再走査だと時間がかかりすぎるので今回取得した日付だけに留める
+        # （中断時の「取得できた日付は必ず走査する」という既存の約束の方を優先する）。
         registered = {"documents": 0, "links": 0}
-        if fetched:
+        full_rescan = bool(
+            cancelled is None and code_list_result.get("fetched") and code_list_result.get("was_empty")
+        )
+        rescanned_dates = 0
+        if full_rescan or fetched:
             try:
-                scan_result = scan_cache(db, dates=fetched, base_dir=base_dir)
+                scan_result = scan_cache(db, dates=(None if full_rescan else fetched), base_dir=base_dir)
                 registered = {"documents": scan_result["documents"], "links": scan_result["links"]}
+                rescanned_dates = scan_result["dates"]
             except Exception:
                 log.exception("開示のキャッシュ再走査に失敗しました")
 
@@ -277,6 +356,10 @@ def disclosures_job(db, settings, base_dir: Path | None = None) -> Callable[[Job
                 summary += f"・{len(errors)}日分失敗"
         if registered["documents"]:
             summary += f"・開示 {registered['documents']}件を登録"
+        if full_rescan:
+            summary += f"・既存のキャッシュ {rescanned_dates} 日分を再走査"
+        if code_list_result.get("error"):
+            summary += "・コードリストの更新に失敗（突合が不完全になります）"
 
         return {
             "days": done,                  # 取得に成功した日数（書類の有無を問わない）
@@ -285,6 +368,7 @@ def disclosures_job(db, settings, base_dir: Path | None = None) -> Callable[[Job
             "errors": errors,
             "aborted": aborted,
             "registered": registered,      # scan_cache で disclosures / disclosure_links に登録した件数
+            "code_list": code_list_result,  # ensure_code_list の戻り値（fetched/was_empty/reason/error）
             "summary": summary,
         }
 

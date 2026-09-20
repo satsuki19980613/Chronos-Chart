@@ -155,6 +155,7 @@
       r.registered = true;
       renderSearchResults(results);
       await refreshStocks();
+      await offerDisclosuresAfterRegister();
     };
   }
 
@@ -226,20 +227,32 @@
   }
 
   // ---------- 空売り残高の一括取得（SPEC §2.2.4） ----------
-  async function refreshShortAllAvailability() {
-    const btn = $("short-all");
-    if (state.stocks.length === 0) {
-      btn.disabled = true;
-      return;
-    }
+
+  // scrape_contact（karauri.net への連絡先。未設定の間はアクセスしない＝不変条件12）が
+  // 入力済みかどうかを返す。登録タブ・ダッシュボードの両方から使う共通判定
+  async function scrapeContactOk() {
     try {
       const settings = await api.call("get_settings");
-      const ok = Boolean((settings.values.scrape_contact || "").trim());
-      btn.disabled = !ok;
-      btn.title = ok ? "" : "設定タブで karauri.net への連絡先を入力してください";
+      return Boolean((settings.values.scrape_contact || "").trim());
     } catch (_) {
-      // 設定を読めなくても登録画面自体は使えるようにしておく（判断は次回の refreshStocks に委ねる）
+      // 設定を読めなくても画面自体は使えるようにしておく（判断は次回の呼び出しに委ねる。
+      // 実際のアクセス可否は Python 側が最終判断するので、ここで false 側に倒す必要はない）
+      return true;
     }
+  }
+
+  async function refreshShortAllAvailability() {
+    const btn = $("short-all");
+    const hint = $("short-all-contact-hint");
+    if (state.stocks.length === 0) {
+      btn.disabled = true;
+      hint.hidden = true;
+      return;
+    }
+    const ok = await scrapeContactOk();
+    btn.disabled = !ok;
+    btn.title = ok ? "" : "設定タブで karauri.net への連絡先を入力してください";
+    hint.hidden = ok;
   }
 
   async function runShortAll() {
@@ -294,7 +307,26 @@
     }
   }
 
-  async function runDisclosures(redoDays) {
+  // 見積り結果から「取得する日数」「探す範囲」の行を組み立てる（確認ダイアログの共通部分）。
+  // 「対象 N 日分」と期間を同じ行に並べると、N と期間の日数が一致しないときに食い違って見える
+  //（当日を60秒以内に取得済みなら対象から外れる、など）。行を分け、期間は「探した範囲」だと分かるようにする
+  function disclosuresRangeText(est, redoDays) {
+    const etaText = est.eta_sec < 60 ? "1分未満で終わります" : `およそ ${Math.round(est.eta_sec / 60)} 分かかります`;
+    const rangeText = est.start ? `${est.start} 〜 ${est.end}` : est.end;
+    let text = `取得する日数: ${est.targets} 日分（間隔 ${est.interval_sec} 秒 ＝ ${etaText}）\n`;
+    text += `探す範囲: ${rangeText}`;
+    if (redoDays > 0) {
+      text += "\n\nこれは取得済みの日付も含めてもう一度取りに行く操作です（過去分にも取下げ・書類情報の修正による更新が入ることがあります）。";
+    }
+    return text;
+  }
+
+  // 登録タブの「開示を取得」「直近90日を取り直す」と、登録直後の取得提案（P8-2）とで
+  // ジョブの起動〜完了待ち〜トースト〜画面更新を共用する。
+  // buildMessage(rangeText, est) は確認ダイアログの文面を返す（省略時は既定の文面）。
+  // onEmpty(est) は対象日が0件のときに呼ばれる（省略時はトーストで知らせる。登録直後の提案では
+  // 「何も言わない」を渡して登録の邪魔をしないようにする）
+  async function runDisclosures(redoDays, { buildMessage, onEmpty } = {}) {
     let est;
     try {
       est = await api.call("estimate_disclosures", redoDays);
@@ -303,19 +335,14 @@
       return;
     }
     if (est.targets === 0) {
-      toast("取得が必要な日付はありません（すべて取得済みです）");
+      if (onEmpty) onEmpty(est);
+      else toast("取得が必要な日付はありません（すべて取得済みです）");
       return;
     }
-    // 「対象 N 日分」と期間を同じ行に並べると、N と期間の日数が一致しないときに食い違って見える
-    //（当日を60秒以内に取得済みなら対象から外れる、など）。行を分け、期間は「探した範囲」だと分かるようにする
-    const etaText = est.eta_sec < 60 ? "1分未満で終わります" : `およそ ${Math.round(est.eta_sec / 60)} 分かかります`;
-    const rangeText = est.start ? `${est.start} 〜 ${est.end}` : est.end;
-    let message = `取得する日数: ${est.targets} 日分（間隔 ${est.interval_sec} 秒 ＝ ${etaText}）\n`;
-    message += `探す範囲: ${rangeText}\n\n`;
-    if (redoDays > 0) {
-      message += "これは取得済みの日付も含めてもう一度取りに行く操作です（過去分にも取下げ・書類情報の修正による更新が入ることがあります）。\n\n";
-    }
-    message += "実行しますか？（実行中はいつでも中断できます）";
+    const rangeText = disclosuresRangeText(est, redoDays);
+    const message = buildMessage
+      ? buildMessage(rangeText, est)
+      : `${rangeText}\n\n実行しますか？（実行中はいつでも中断できます）`;
     const ok = confirm(message);
     if (!ok) return;
 
@@ -332,6 +359,31 @@
       toast(job.result?.summary || "開示の取得が完了しました", job.result?.aborted ? "warn" : "info", 8000);
     }
     if (state.currentSymbol && $("view-dashboard").classList.contains("is-active")) await openDashboard(state.currentSymbol);
+  }
+
+  // 登録直後に、その銘柄の期間ぶんの開示取得を提案する（P8-2）。起動時の自動更新は直近30日分しか
+  // 取りに行かず、銘柄登録時はキャッシュの再走査だけで API を呼ばない（SPEC §2.4.2）。そのため
+  // 過去1年分の株価を登録しても開示はキャッシュにある数日分しか埋まらない。EDINET キー未設定・
+  // 対象0件のときは登録のじゃまをしないよう何も言わずに終わる
+  async function offerDisclosuresAfterRegister() {
+    let settings;
+    try {
+      settings = await api.call("get_settings");
+    } catch (_) {
+      return; // 登録自体は成功しているので、提案できないだけで諦める
+    }
+    if (!settings.secrets.edinet_api_key.source) return; // 未設定なら提案しない
+
+    await runDisclosures(0, {
+      onEmpty: () => {}, // 対象0件（＝新規銘柄の期間もすでに取得済み）なら何も言わない
+      buildMessage: (rangeText) => {
+        let message = "登録した銘柄の期間に合わせて、EDINET の開示を取得できます。\n\n";
+        message += `${rangeText}\n\n`;
+        message += "いまは起動時の自動更新では直近30日分しか取りに行きません。過去の開示を見るにはこの取得が必要です。\n";
+        message += "実行しますか？（実行中はいつでも中断できます。あとで「開示を取得」からも実行できます）";
+        return message;
+      },
+    });
   }
 
   function viewStock(symbol) {
@@ -357,6 +409,7 @@
     $("dash-disclosure-counts").hidden = !hasStocks;
     if (!hasStocks) {
       $("dash-fetch-short").disabled = true;
+      $("dash-short-contact-hint").hidden = true;
       $("dash-fetch-taisyaku").disabled = true;
       $("dash-disclosure-counts").textContent = "";
       $("events-list").innerHTML = "";
@@ -367,8 +420,15 @@
     }
     const target = symbol && state.stocks.some((s) => s.symbol === symbol) ? symbol : state.stocks[0].symbol;
     const domestic = target.endsWith(".T");
-    $("dash-fetch-short").disabled = !domestic;
-    $("dash-fetch-short").title = domestic ? "" : "空売り残高は国内銘柄（.T）のみ取得できます";
+    // 国内銘柄でも scrape_contact 未設定なら取得できない（不変条件12）。get_settings が失敗しても
+    // ダッシュボードの表示自体は止めない（scrapeContactOk が true 側に倒してフォールバックする）
+    const contactOk = await scrapeContactOk();
+    const shortAvailable = domestic && contactOk;
+    $("dash-fetch-short").disabled = !shortAvailable;
+    $("dash-fetch-short").title = !domestic
+      ? "空売り残高は国内銘柄（.T）のみ取得できます"
+      : (contactOk ? "" : "設定タブで karauri.net への連絡先を入力してください");
+    $("dash-short-contact-hint").hidden = !(domestic && !contactOk);
     $("dash-fetch-taisyaku").disabled = false;
     const data = await withBusy("読み込み中…", () => api.call("dashboard", target));
     if (!data) {

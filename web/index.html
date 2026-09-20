@@ -75,6 +75,7 @@
         </div>
         <p class="empty" id="stock-empty">まだ銘柄が登録されていません。上の検索から登録してください。</p>
         <p class="hint">空売り残高の一括取得は個人運営サイト（karauri.net）へのアクセスです。取得は深夜〜早朝の実行を推奨します（公表は取引時間外のため）。</p>
+        <p class="hint" id="short-all-contact-hint" hidden>連絡先（メールアドレスなど）を設定タブで入力するまで、karauri.net へはアクセスしません。<b>相手サイトに連絡先を名乗るための仕様です。</b>設定タブの「空売り残高の取得（karauri.net）」から入力してください。</p>
         <p class="hint">開示の取得は EDINET から有価証券報告書・半期報告書などの法定開示書類を日付ごとに取得します（TDnet の情報は対象外です）。</p>
       </div>
     </section>
@@ -88,6 +89,7 @@
         <button class="btn" id="dash-fetch-taisyaku">貸借取引残高（日証金）を取得</button>
         <span class="toolbar-note" id="dash-updated"></span>
       </div>
+      <p class="hint" id="dash-short-contact-hint" hidden>空売り残高の取得は、設定タブで連絡先（メールアドレスなど）を入力するまで実行できません。<b>相手サイトに連絡先を名乗るための仕様です。</b>設定タブの「空売り残高の取得（karauri.net）」から入力してください。</p>
       <p class="hint" id="dash-supply-hint">空売り残高の合計は本ツールが算出した値です（発行済株式総数の0.5%以上の報告義務がある機関のみが対象。0 は「空売りがない」ではなく、該当する報告者がいないことを意味します）。
         貸借取引残高（日証金）は貸借銘柄のみが対象で、本ツールで取得を始めた日以降のデータしかありません。</p>
       <p class="hint" id="dash-disclosure-counts"></p>
