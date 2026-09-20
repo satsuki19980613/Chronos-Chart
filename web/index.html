@@ -115,6 +115,9 @@
         </div>
 
         <div class="dash-grid">
+          <!-- 左カラム: チャートと日次データ。右カラム（テクニカル判定など）のほうが縦に長いので、
+               日次データをここに入れてチャート下の余白を埋める -->
+          <div class="dash-main">
           <div class="panel chart-panel">
             <div class="chart-controls">
               <div class="control-group">
@@ -141,6 +144,17 @@
             </div>
           </div>
 
+          <div class="panel">
+            <div class="panel-head row">
+              <h2>日次データ（直近60日）</h2>
+              <span class="hint-inline">全期間のデータは CSV フォルダにあります</span>
+            </div>
+            <div class="table-wrap data-table-wrap">
+              <table class="table data-table" id="data-table"></table>
+            </div>
+          </div>
+          </div>
+
           <aside class="side">
             <div class="panel">
               <div class="panel-head"><h2>テクニカル判定 <span class="hint-inline" id="cards-date"></span></h2></div>
@@ -162,15 +176,6 @@
           </aside>
         </div>
 
-        <div class="panel">
-          <div class="panel-head row">
-            <h2>日次データ（直近60日）</h2>
-            <span class="hint-inline">全期間のデータは CSV フォルダにあります</span>
-          </div>
-          <div class="table-wrap data-table-wrap">
-            <table class="table data-table" id="data-table"></table>
-          </div>
-        </div>
       </div>
     </section>
     <!-- ================= 出力画面 ================= -->
