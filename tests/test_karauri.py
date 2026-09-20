@@ -191,6 +191,20 @@ def test_unknown_note_is_logged(caplog):
     assert "unknown note" in caplog.text
 
 
+def test_position_closed_note_is_not_logged_as_unknown(caplog):
+    """'ポジション解消' は報告義務消失を示す既知の文言なので警告しない（実サイトの 9984 で観測。SPEC §2.2.2/§2.2.3）。"""
+    html = """
+    <table id="sort" class="mtb2">
+    <tr><th>計算日</th><th>空売り者</th><th>残高割合</th><th>増減率</th><th>残高数量</th><th>増減量</th><th>備考</th></tr>
+    <tr class="obb"><td><a href="/1234/?date=2026-09-01">2026/09/01</a></td><td><a href="/1234/?f=1">A</a></td><td>0.0%</td><td>-1.0%</td><td>0株</td><td>-10</td><td>ポジション解消</td></tr>
+    </table>
+    """
+    with caplog.at_level(logging.WARNING):
+        rows = parse(html)
+    assert "unknown note" not in caplog.text
+    assert rows[0]["note"] == "ポジション解消"
+
+
 # ---------- make_client ----------
 
 @pytest.fixture

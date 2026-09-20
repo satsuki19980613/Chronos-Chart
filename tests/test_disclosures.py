@@ -51,6 +51,23 @@ def _set_fetch_log(db: Database, date: str, result: str, fetched_at: str) -> Non
         )
 
 
+def _seed_fresh_code_list(db: Database) -> None:
+    """`ensure_code_list` が `"fresh"`（取得しない）と判定する状態を作る。
+
+    `disclosures_job` は先頭で毎回 `ensure_code_list` を呼ぶようになったので、コードリストの
+    挙動そのものを検証しない既存の job テストにこれを呼んでおかないと、`edinet_codes` が空の
+    ままの初期状態から `fetch_and_save_code_list` の呼び出し（＝実ネットワークアクセス）や、
+    キャッシュ全体の再走査（`base_dir` 未指定のテストでは実際の `config.EDINET_CACHE_DIR` を
+    読みに行ってしまう）が誘発され、テストの結果がジョブ本来の挙動と無関係にぶれてしまう。
+    """
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO edinet_codes (edinet_code, sec_code, name) VALUES (?, ?, ?)",
+            ("E00000", "00000", "コードリストテスト用ダミー"),
+        )
+    db.log_fetch("edinet_codes", "list", "ok")
+
+
 class _FakeSettings:
     """`Settings` の代わり。`edinet.make_client` が読む `get("scrape_contact")` にも応える。"""
 
@@ -238,6 +255,141 @@ def test_estimate_api_key_not_ok_when_missing(tmp_path):
     assert disclosures.estimate(db, settings)["api_key_ok"] is False
 
 
+# ---------- ensure_code_list（P8-1: コードリストの自動取得） ----------
+
+
+def _insert_edinet_code(db: Database, edinet_code: str = "E00001", sec_code: str = "10000") -> None:
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO edinet_codes (edinet_code, sec_code, name) VALUES (?, ?, ?)",
+            (edinet_code, sec_code, "テスト株式会社"),
+        )
+
+
+def _insert_code_list_fetch_log(db: Database, result: str, fetched_at: str) -> None:
+    """`edinet_codes`/`list` の `fetch_log` を明示的な `fetched_at` で書く（`_set_fetch_log` の別ソース版）。"""
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO fetch_log (source, key, fetched_at, result) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(source, key) DO UPDATE SET fetched_at = excluded.fetched_at, result = excluded.result",
+            ("edinet_codes", "list", fetched_at, result),
+        )
+
+
+def test_ensure_code_list_fetches_when_no_record(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    calls = []
+
+    def fake_fetch(db_, settings=None, cancel=None, client=None):
+        calls.append(client)
+        db_.log_fetch("edinet_codes", "list", "ok")
+        return {"saved": 5}
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch)
+    result = disclosures.ensure_code_list(db, _FakeSettings())
+
+    assert len(calls) == 1
+    assert result == {"fetched": True, "was_empty": True, "saved": 5, "reason": "missing", "error": None}
+
+
+def test_ensure_code_list_fetches_when_previous_result_is_error(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _insert_edinet_code(db)  # 前回の中身は残っていても、記録が error なら信用しない
+    _insert_code_list_fetch_log(db, "error:何かおかしい", "2026-09-19 00:00:00")
+
+    calls = []
+
+    def fake_fetch(db_, settings=None, cancel=None, client=None):
+        calls.append(1)
+        return {"saved": 1}
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch)
+    result = disclosures.ensure_code_list(db, _FakeSettings())
+
+    assert calls == [1]
+    assert result["fetched"] is True
+    assert result["reason"] == "missing"
+
+
+def test_ensure_code_list_fetches_when_stale(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _insert_edinet_code(db)
+    _insert_code_list_fetch_log(db, "ok", "2026-09-01 00:00:00")  # 19日前
+
+    calls = []
+
+    def fake_fetch(db_, settings=None, cancel=None, client=None):
+        calls.append(1)
+        return {"saved": 1}
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch)
+    now = datetime(2026, 9, 20, 0, 0, 0)
+    result = disclosures.ensure_code_list(db, _FakeSettings(), now=now)
+
+    assert calls == [1]
+    assert result["reason"] == "stale"
+    assert result["fetched"] is True
+    assert result["was_empty"] is False  # 取得前から中身はあった
+
+
+def test_ensure_code_list_skips_when_fresh_and_table_has_rows(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _insert_edinet_code(db)
+    _insert_code_list_fetch_log(db, "ok", "2026-09-19 00:00:00")  # 1日前
+
+    calls = []
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", lambda *a, **kw: calls.append(1))
+    now = datetime(2026, 9, 20, 0, 0, 0)
+    result = disclosures.ensure_code_list(db, _FakeSettings(), now=now)
+
+    assert calls == []
+    assert result == {"fetched": False, "was_empty": False, "saved": 0, "reason": "fresh", "error": None}
+
+
+def test_ensure_code_list_fetches_when_table_empty_despite_fresh_record(tmp_path, monkeypatch):
+    """記録は新しくても `edinet_codes` が空なら取り直す（今回の不具合の再発防止）。"""
+    db = _db(tmp_path)
+    _insert_code_list_fetch_log(db, "ok", "2026-09-19 00:00:00")  # 記録だけあって中身が無い状態を再現
+
+    calls = []
+
+    def fake_fetch(db_, settings=None, cancel=None, client=None):
+        calls.append(1)
+        return {"saved": 3}
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch)
+    now = datetime(2026, 9, 20, 0, 0, 0)
+    result = disclosures.ensure_code_list(db, _FakeSettings(), now=now)
+
+    assert calls == [1]
+    assert result == {"fetched": True, "was_empty": True, "saved": 3, "reason": "empty_table", "error": None}
+
+
+def test_ensure_code_list_returns_error_without_raising_on_fetch_failure(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+
+    def fake_fetch(db_, settings=None, cancel=None, client=None):
+        raise RuntimeError("接続できません")
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch)
+    result = disclosures.ensure_code_list(db, _FakeSettings())
+
+    assert result["fetched"] is False
+    assert result["error"] == "接続できません"
+    assert result["reason"] == "missing"
+
+
+def test_ensure_code_list_reraises_cancelled(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+
+    def fake_fetch(db_, settings=None, cancel=None, client=None):
+        raise Cancelled()
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch)
+    with pytest.raises(Cancelled):
+        disclosures.ensure_code_list(db, _FakeSettings())
+
+
 # ---------- disclosures_job ----------
 
 
@@ -251,6 +403,7 @@ def test_job_requires_api_key(tmp_path):
 
 def test_job_progress_updates_per_fetch_call_and_forwards_base_dir(monkeypatch, tmp_path):
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # コードリストの挙動はこのテストの対象外
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=4)).strftime("%Y-%m-%d")
     _insert_price(db, start)
@@ -279,6 +432,7 @@ def test_job_progress_updates_per_fetch_call_and_forwards_base_dir(monkeypatch, 
 
 def test_job_aborts_forbidden_on_429_and_keeps_previously_fetched(monkeypatch, tmp_path):
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # コードリストの挙動はこのテストの対象外
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=4)).strftime("%Y-%m-%d")
     _insert_price(db, start)
@@ -303,6 +457,7 @@ def test_job_aborts_forbidden_on_429_and_keeps_previously_fetched(monkeypatch, t
 
 def test_job_aborts_after_three_consecutive_generic_failures(monkeypatch, tmp_path):
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # コードリストの挙動はこのテストの対象外
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
     _insert_price(db, start)
@@ -326,6 +481,7 @@ def test_job_aborts_after_three_consecutive_generic_failures(monkeypatch, tmp_pa
 
 def test_job_continues_after_two_failures_then_succeeds(monkeypatch, tmp_path):
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # コードリストの挙動はこのテストの対象外
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
     _insert_price(db, start)
@@ -349,6 +505,7 @@ def test_job_continues_after_two_failures_then_succeeds(monkeypatch, tmp_path):
 
 def test_job_cancelled_stops_but_keeps_previous_fetch_calls(monkeypatch, tmp_path):
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # コードリストの挙動はこのテストの対象外
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y-%m-%d")
     _insert_price(db, start)
@@ -376,6 +533,7 @@ def test_job_cancelled_stops_but_keeps_previous_fetch_calls(monkeypatch, tmp_pat
 def test_job_counts_empty_days_separately(monkeypatch, tmp_path):
     """書類0件の日は `empty` に入り、`days` には数えられる（土日祝を特別扱いしない SPEC §2.4.4）。"""
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # コードリストの挙動はこのテストの対象外
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=3)).strftime("%Y-%m-%d")
     _insert_price(db, start)
@@ -400,6 +558,7 @@ def test_job_counts_empty_days_separately(monkeypatch, tmp_path):
 
 def test_job_respects_max_days_param(monkeypatch, tmp_path):
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # コードリストの挙動はこのテストの対象外
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=10)).strftime("%Y-%m-%d")
     _insert_price(db, start)
@@ -416,6 +575,143 @@ def test_job_respects_max_days_param(monkeypatch, tmp_path):
 
     assert len(calls) == 3
     assert len(result["with_documents"]) == 3
+
+
+# ---------- disclosures_job × コードリスト（P8-1） ----------
+
+
+def test_disclosures_job_fetches_code_list_once_at_start(monkeypatch, tmp_path):
+    """`disclosures_job` は先頭で `ensure_code_list` 経由でコードリストを1回だけ取得する。"""
+    db = _db(tmp_path)
+    today = disclosures.today_jst()
+    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    _insert_price(db, start)
+    settings = _FakeSettings()
+
+    calls = []
+
+    def fake_fetch_and_save_code_list(db_, settings_=None, cancel=None, client=None):
+        calls.append(client)
+        db_.log_fetch("edinet_codes", "list", "ok")
+        return {"saved": 2}
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch_and_save_code_list)
+
+    def fake_fetch_day(db_, date, api_key, cancel=None, client=None, base_dir=None):
+        return _ok(date)
+
+    monkeypatch.setattr(edinet, "fetch_day", fake_fetch_day)
+    result = disclosures.disclosures_job(db, settings)(FakeCtx(), {})
+
+    assert len(calls) == 1  # 書類一覧を何日ぶん取得しても、コードリストの取得は1回だけ
+    assert calls[0] is None  # SPEC: 書類一覧用のクライアントは渡さない
+    assert result["code_list"] == {"fetched": True, "was_empty": True, "saved": 2, "reason": "missing", "error": None}
+
+
+def test_disclosures_job_skips_code_list_fetch_when_fresh(monkeypatch, tmp_path):
+    db = _db(tmp_path)
+    _seed_fresh_code_list(db)
+    today = disclosures.today_jst()
+    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    _insert_price(db, start)
+    settings = _FakeSettings()
+
+    calls = []
+
+    def fake_fetch_and_save_code_list(*a, **kw):
+        calls.append(1)
+        raise AssertionError("コードリストが新しいのに取得している")
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch_and_save_code_list)
+
+    def fake_fetch_day(db_, date, api_key, cancel=None, client=None, base_dir=None):
+        return _ok(date)
+
+    monkeypatch.setattr(edinet, "fetch_day", fake_fetch_day)
+    result = disclosures.disclosures_job(db, settings)(FakeCtx(), {})
+
+    assert calls == []
+    assert result["code_list"]["fetched"] is False
+    assert result["code_list"]["reason"] == "fresh"
+
+
+def test_disclosures_job_continues_when_code_list_fetch_fails(monkeypatch, tmp_path):
+    """コードリストが取れなくても書類一覧の取得は最後まで走る（secCode の補助突合は効く）。"""
+    db = _db(tmp_path)
+    today = disclosures.today_jst()
+    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    _insert_price(db, start)
+    settings = _FakeSettings()
+
+    def fake_fetch_and_save_code_list(db_, settings_=None, cancel=None, client=None):
+        raise RuntimeError("接続できません")
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch_and_save_code_list)
+
+    def fake_fetch_day(db_, date, api_key, cancel=None, client=None, base_dir=None):
+        return _ok(date)
+
+    monkeypatch.setattr(edinet, "fetch_day", fake_fetch_day)
+    result = disclosures.disclosures_job(db, settings)(FakeCtx(), {})
+
+    assert result["aborted"] is None
+    assert len(result["with_documents"]) == 2
+    assert result["code_list"]["error"] == "接続できません"
+    assert "コードリストの更新に失敗" in result["summary"]
+
+
+def test_disclosures_job_backfills_major_holding_from_existing_cache_when_code_list_was_empty(monkeypatch, tmp_path):
+    """P8-1 の再発防止（実データでの不具合）: `edinet_codes` が空のまま保存された既存キャッシュには、
+    大量保有報告書（350/360。issuerEdinetCode でしか突合しない）の紐付けが1件も入らない。
+    コードリストが復旧したら、今回取得していない日付のキャッシュも再走査して埋め直す必要がある。
+    """
+    db = _db(tmp_path)
+    db.upsert_stock("2222.T", "2222", "架空商事", "東証", "JPY")  # edinet_codes は空のまま登録銘柄にする
+    cache_dir = tmp_path / "cache"
+
+    # 1日目: すでに取得・確定済み。コードリストが空だった当時に保存されたキャッシュを模す
+    # （fixture の S9000002 は 350・issuerEdinetCode=E90002 で、2222.T にしか issuer 突合しない）
+    day1 = "2026-06-20"
+    edinet.write_cache(day1, _load_fixture(), base_dir=cache_dir)
+    finalized_at = disclosures._finalize_deadline(day1).strftime("%Y-%m-%d %H:%M:%S")
+    _set_fetch_log(db, day1, "ok", finalized_at)
+
+    # 2日目（今日）: 株価の最古日をここにして、今回のジョブの対象日をこの1日だけにする
+    day2 = disclosures.today_jst()
+    _insert_price(db, day2, symbol="2222.T", code="2222")
+
+    def fake_fetch_and_save_code_list(db_, settings_=None, cancel=None, client=None):
+        with db_.write() as conn:
+            conn.execute(
+                "INSERT INTO edinet_codes (edinet_code, sec_code, name) VALUES (?, ?, ?)",
+                ("E90002", "22220", "架空商事"),
+            )
+        db_.log_fetch("edinet_codes", "list", "ok")
+        return {"saved": 1}
+
+    monkeypatch.setattr(edinet, "fetch_and_save_code_list", fake_fetch_and_save_code_list)
+
+    def fake_fetch_day(db_, date, api_key, cancel=None, client=None, base_dir=None):
+        # 今回取得する日付には書類が無かった、という想定（1日目のキャッシュだけが検証対象）
+        edinet.write_cache(date, {"metadata": {}, "results": []}, base_dir=base_dir)
+        return {"date": date, "result": "empty", "documents": 0, "bytes": 1}
+
+    monkeypatch.setattr(edinet, "fetch_day", fake_fetch_day)
+
+    settings = _FakeSettings()
+    job = disclosures.disclosures_job(db, settings, base_dir=cache_dir)
+    result = job(FakeCtx(), {})
+
+    assert result["code_list"]["fetched"] is True
+    assert result["code_list"]["was_empty"] is True
+    assert "既存のキャッシュ" in result["summary"]
+
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM disclosure_links WHERE doc_id = ? AND symbol = ? AND role = ?",
+            ("S9000002", "2222.T", "issuer"),
+        ).fetchone()
+    assert row is not None, "コードリスト復旧後、既存キャッシュの大量保有報告書が紐づいていない"
 
 
 # ---------- ジョブと取得層のつなぎ目（fetch_day をフェイクに差し替えない） ----------
@@ -449,6 +745,7 @@ def test_job_writes_cache_and_fetch_log_end_to_end(monkeypatch, tmp_path):
     HTTP はフェイクのセッションで止めるのでネットワークには出ない。
     """
     db = _db(tmp_path)
+    _seed_fresh_code_list(db)  # 差し替えた make_client がコードリスト側にも使われて壊れないように
     today = disclosures.today_jst()
     oldest = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
     _insert_price(db, oldest)
@@ -1031,6 +1328,7 @@ def test_cleanup_orphans_deletes_only_documents_with_no_remaining_links(tmp_path
 def test_disclosures_job_scans_cache_after_fetch_and_returns_registered(monkeypatch, tmp_path):
     db = _db(tmp_path)
     _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    db.log_fetch("edinet_codes", "list", "ok")  # コードリストは取得済み扱いにする（このテストの対象外）
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     _insert_price(db, start)  # fetch_range 用（symbol は 1111.T のまま upsert される）
@@ -1061,6 +1359,7 @@ def test_disclosures_job_scans_cache_after_fetch_and_returns_registered(monkeypa
 def test_disclosures_job_scans_fetched_dates_before_reraising_cancelled(monkeypatch, tmp_path):
     db = _db(tmp_path)
     _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    db.log_fetch("edinet_codes", "list", "ok")  # コードリストは取得済み扱いにする（このテストの対象外）
     today = disclosures.today_jst()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
     _insert_price(db, start)
