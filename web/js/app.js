@@ -300,7 +300,24 @@
     renderCards(data.cards, cur);
     renderSignals(data.signals);
     renderTable(data.table, cur);
+    updateSupplyChipAvailability();
     renderChart();
+  }
+
+  // 需給ペインのチップは、表示中の銘柄にデータが1件も無ければ無効化し理由を表示する。
+  // ON/OFF の状態（localStorage）自体は変えない。空のペインを作らないのは chart.js 側の仕事（P3-4）
+  function updateSupplyChipAvailability() {
+    const chart = state.dashboard?.chart;
+    const apply = (id, info) => {
+      const btn = document.querySelector(`#pane-chips .chip[data-id="${id}"]`);
+      if (!btn) return;
+      const available = Boolean(info?.available);
+      btn.disabled = !available;
+      btn.classList.toggle("is-unavailable", !available);
+      btn.title = available ? "" : (info?.reason || "");
+    };
+    apply("short", chart?.short);
+    apply("taisyaku", chart?.taisyaku);
   }
 
   const GROUPS = { trend: "トレンド系", oscillator: "オシレーター系", volatility: "ボラティリティ" };

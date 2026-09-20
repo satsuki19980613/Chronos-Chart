@@ -35,6 +35,8 @@ window.StockChart = (function () {
     { id: "psy", label: "サイコロジカル", color: "#94a3b8" },
     { id: "stddev", label: "標準偏差", color: "#22d3ee" },
     { id: "momentum", label: "モメンタム", color: "#a3e635" },
+    { id: "short", label: "空売り残高", color: "#fb7185" },
+    { id: "taisyaku", label: "貸借取引残高（日証金）", color: "#2dd4bf" },
   ];
 
   const DEFAULTS = {
@@ -123,7 +125,10 @@ window.StockChart = (function () {
     const pf1 = { type: "price", precision: 1, minMove: 0.1 };
     const pf2 = { type: "price", precision: 2, minMove: 0.01 };
     const overlays = new Set(state.overlays);
-    const panes = PANES.filter((p) => state.panes.includes(p.id));
+    // 需給ペイン（short/taisyaku）は値が1件も無い銘柄では描画対象から外す。
+    // チップが ON のまま銘柄を切り替えても空のペインを作らないため（SPEC §2.5.2・P3-4）
+    const paneDataAvailable = { short: d.short?.available, taisyaku: d.taisyaku?.available };
+    const panes = PANES.filter((p) => state.panes.includes(p.id) && paneDataAvailable[p.id] !== false);
 
     container.style.height = `${400 + panes.length * 125}px`;
 
@@ -143,16 +148,20 @@ window.StockChart = (function () {
       localization: { locale: "ja-JP", dateFormat: "yyyy/MM/dd" },
     });
 
-    const legendItems = []; // [表示名, 色, 値配列] メインチャートの凡例
-    const line = (values, color, pane, opts = {}, legend = null) => {
+    const legendItems = []; // [表示名, 色, 値配列, 値フォーマッタ(省略時は価格表示)] メインチャートの凡例
+    const line = (values, color, pane, opts = {}, legend = null, legendFormat = null) => {
       const { dates: seriesDates = dates, ...options } = opts;
       const s = chart.addSeries(LWC.LineSeries, {
         color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: true,
         crosshairMarkerVisible: false, ...options,
       }, pane);
       s.setData(toSeries(seriesDates, values));
-      if (legend) legendItems.push([legend, color, values]);
+      if (legend) legendItems.push([legend, color, values, legendFormat]);
       return s;
+    };
+    // 描画用のシリーズを増やさずに凡例だけ登録する（貸借取引残高の区間分割シリーズ用。§P3-3）
+    const legendOnly = (label, color, values, legendFormat = null) => {
+      legendItems.push([label, color, values, legendFormat]);
     };
     const histogram = (values, pane, opts = {}) => {
       const s = chart.addSeries(LWC.HistogramSeries, { priceLineVisible: false, lastValueVisible: false, ...opts }, pane);
@@ -319,6 +328,75 @@ window.StockChart = (function () {
           guide(s, 0);
           break;
         }
+        case "short": {
+          // 空売り残高合計（0.5%以上の報告義務者の合計・本ツール算出）。報告が出た日にだけ変わる量なので階段線。
+          // 線種は必ず定数 LWC.LineType.WithSteps を使う（数値の 2 は曲線。SPEC §2.5.2）
+          paneLabels.push("空売り残高（報告義務 0.5% 以上の合計・本ツール算出）%");
+          const byDate = new Map(d.short.points.map((pt) => [pt.date, pt.ratio]));
+          // シリーズに渡すのは payload の点だけ（報告があった日と、最後に足される据え置きの点）。
+          // 階段線なので、点と点の間は自動で水平に延びる
+          const sparse = dates.map((date) => (byDate.has(date) ? byDate.get(date) : null));
+          // 凡例だけは直前の報告値を持ち越した配列を使う。階段線は見た目上ずっと値を保持しているので、
+          // 報告のない日にクロスヘアを合わせたときに凡例が「—」になると画面と矛盾する
+          let lastRatio = null;
+          const held = dates.map((date) => {
+            if (byDate.has(date)) lastRatio = byDate.get(date);
+            return lastRatio;  // 最初の報告より前は null のまま
+          });
+          const fmtRatio = (v) => (v === null || v === undefined ? "—" : `${window.fmt.num(v, 2)}%`);
+          line(sparse, "#fb7185", pane, {
+            lineType: LWC.LineType.WithSteps,
+            priceFormat: pf2,
+          });
+          legendOnly("空売り残高", "#fb7185", held, fmtRatio);
+          break;
+        }
+        case "taisyaku": {
+          // 貸借取引残高（日証金）。融資残高・貸株残高の通常線。日次データなので欠測は「不明」であり、
+          // 据え置きにせず線を切る。案A: 連続区間（dates の並びで隣り合う日にデータがあるか）ごとに
+          // 別シリーズへ分ける（SPEC §2.5.2・§9-2）
+          paneLabels.push("貸借取引残高（日証金） 融資残高 / 貸株残高");
+          const byDate = new Map(d.taisyaku.points.map((pt) => [pt.date, pt]));
+          const segments = [];
+          let cur = null;
+          dates.forEach((date, i) => {
+            if (byDate.has(date)) {
+              if (cur === null) cur = { start: i, end: i };
+              else cur.end = i;
+            } else if (cur) {
+              segments.push(cur);
+              cur = null;
+            }
+          });
+          if (cur) segments.push(cur);
+
+          const denseFor = (field) => dates.map((date) => {
+            const pt = byDate.get(date);
+            return pt ? pt[field] : null;
+          });
+          const taisyakuFormat = { type: "price", precision: 0, minMove: 1 };
+          const buildField = (field, color) => {
+            segments.forEach((seg, idx) => {
+              const isLast = idx === segments.length - 1;
+              const values = dates.map((date, i) => {
+                if (i < seg.start || i > seg.end) return null;
+                const pt = byDate.get(date);
+                return pt ? pt[field] : null;
+              });
+              // 区間シリーズには legend を渡さない。lastValueVisible は最後の区間だけ
+              // （重複防止。区間ごとに出すと過去区間の末尾にも値ラベルが残ってしまう）
+              line(values, color, pane, {
+                lineWidth: 1.5,
+                priceFormat: taisyakuFormat,
+                lastValueVisible: isLast,
+              });
+            });
+            legendOnly(field === "yushi" ? "融資残高" : "貸株残高", color, denseFor(field), (v) => (v === null || v === undefined ? "—" : window.fmt.volume(v)));
+          };
+          buildField("yushi", "#facc15");
+          buildField("kashi", "#818cf8");
+          break;
+        }
       }
     });
 
@@ -359,8 +437,10 @@ window.StockChart = (function () {
       } else {
         parts.push(`<span class="lg-date">${f.date(future[i - dates.length].date)}（先行）</span>`);
       }
-      for (const [label, color, values] of legendItems) {
-        parts.push(`<span style="color:${color}">${f.escape(label)} <b>${f.price(values[i] ?? null, currency)}</b></span>`);
+      for (const [label, color, values, formatter] of legendItems) {
+        const raw = values[i] ?? null;
+        const text = formatter ? formatter(raw) : f.price(raw, currency);
+        parts.push(`<span style="color:${color}">${f.escape(label)} <b>${text}</b></span>`);
       }
       legendEl.innerHTML = parts.join("");
     }
