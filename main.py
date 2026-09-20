@@ -21,6 +21,7 @@ from app.fetcher import YahooFetcher
 from app.jobs import JobManager, selftest_job
 from app.service import StockService
 from app.settings import Settings
+from app.sources.karauri import short_all_job
 
 
 def setup_logging(debug: bool) -> None:
@@ -53,6 +54,7 @@ def main() -> None:
     jobs = JobManager()
     # 起動時の自動更新。画面の初期化が終わったら JS 側が開始する（SPEC §2.8.2）
     jobs.register("auto_update", AutoUpdater(db, service, settings).run)
+    jobs.register("short_all", short_all_job(db, settings))
     if args.debug:
         jobs.register("selftest", selftest_job)
     api = Api(service, jobs, settings)

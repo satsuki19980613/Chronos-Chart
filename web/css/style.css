@@ -105,6 +105,7 @@ main { padding: 20px 24px 40px; max-width: 1680px; margin: 0 auto; }
 }
 .panel-head { margin-bottom: 14px; }
 .panel-head.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.btn-row { display: flex; align-items: center; gap: 8px; }
 .panel h2 { margin: 0; font-size: 15px; font-weight: 700; }
 .hint { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
 .hint-inline { color: var(--faint); font-size: 12px; font-weight: 400; margin-left: 6px; }

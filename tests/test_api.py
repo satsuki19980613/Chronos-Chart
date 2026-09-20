@@ -17,8 +17,11 @@ from conftest import make_prices
 
 from app.api import Api
 from app.database import Database
+from app.errors import UserFacingError
 from app.fetcher import FetchError, SearchResult
 from app.service import StockService
+from app.settings import Settings
+from app.sources import karauri, taisyaku
 
 
 class FakeFetcher:
@@ -431,3 +434,114 @@ def test_concurrent_update_same_symbol_is_safe(env):
 
     indicators = service.db.get_indicators("7203.T")
     assert len(indicators) == 200
+
+
+# ---------------------------------------------------------------------------
+# 6. 需給データの取得（P2-6）: fetch_short / fetch_taisyaku / estimate_short_all
+#    実際の取得ロジックは tests/test_karauri.py・tests/test_taisyaku.py で検証済みなので、
+#    ここでは Api が db・settings を正しく渡し、戻り値・エラーを規約どおりに扱うことだけを見る。
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def supply_env(tmp_path):
+    db = Database(tmp_path / "supply.db")
+    db.init_schema()
+    db.upsert_stock("1234.T", "1234", "テスト株式会社", "東証", "JPY")
+    fetcher = FakeFetcher()
+    service = StockService(db, fetcher, tmp_path / "csv", tmp_path / "output")
+    settings = Settings(db, keyring_backend=object())
+    api = Api(service, settings=settings)
+    return api, db, settings
+
+
+def test_fetch_short_happy_path(supply_env, monkeypatch):
+    api, db, settings = supply_env
+    calls = []
+
+    def fake_fetch_one(db_arg, settings_arg, symbol, cancel=None, client=None):
+        calls.append((db_arg, settings_arg, symbol))
+        return {"symbol": symbol, "status": "ok", "rows": 3, "dates": 2, "since": "2026-09-01"}
+
+    monkeypatch.setattr(karauri, "fetch_one", fake_fetch_one)
+    result = assert_json_ok(api.fetch_short("1234.T"))
+    assert result["data"] == {"symbol": "1234.T", "status": "ok", "rows": 3, "dates": 2, "since": "2026-09-01"}
+    assert calls == [(db, settings, "1234.T")]
+
+
+def test_fetch_short_propagates_user_facing_error(supply_env, monkeypatch):
+    api, *_ = supply_env
+
+    def raise_error(db_arg, settings_arg, symbol, cancel=None, client=None):
+        raise UserFacingError("scrape_contact（連絡先）が未設定です")
+
+    monkeypatch.setattr(karauri, "fetch_one", raise_error)
+    result = assert_error(api.fetch_short("1234.T"))
+    assert "scrape_contact" in result["error"]
+
+
+def test_fetch_short_unexpected_error_is_wrapped(supply_env, monkeypatch):
+    api, *_ = supply_env
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(karauri, "fetch_one", boom)
+    result = assert_error(api.fetch_short("1234.T"))
+    assert "kaboom" in result["error"]
+    assert "予期しないエラー" in result["error"]
+
+
+def test_fetch_short_without_settings_configured(env):
+    api, *_ = env  # env の Api は settings=None で作られている
+    result = assert_error(api.fetch_short("1234.T"))
+    assert "設定" in result["error"]
+
+
+def test_fetch_taisyaku_happy_path(supply_env, monkeypatch):
+    api, db, settings = supply_env
+    calls = []
+
+    def fake_fetch_and_save(db_arg, settings_arg=None, symbols=None, cancel=None, client=None):
+        calls.append((db_arg, settings_arg))
+        return {"saved": 1, "skipped": 0, "date": "2026-09-17", "missing": []}
+
+    monkeypatch.setattr(taisyaku, "fetch_and_save", fake_fetch_and_save)
+    result = assert_json_ok(api.fetch_taisyaku())
+    assert result["data"] == {"saved": 1, "skipped": 0, "date": "2026-09-17", "missing": []}
+    assert calls == [(db, settings)]
+
+
+def test_fetch_taisyaku_without_settings_configured(env):
+    api, *_ = env
+    result = assert_error(api.fetch_taisyaku())
+    assert "設定" in result["error"]
+
+
+def test_estimate_short_all_happy_path(supply_env, monkeypatch):
+    api, db, settings = supply_env
+
+    def fake_estimate(db_arg, settings_arg, symbols=None):
+        assert (db_arg, settings_arg) == (db, settings)
+        return {"targets": 1, "skipped": 0, "interval_sec": 10, "eta_sec": 10, "contact_ok": True}
+
+    monkeypatch.setattr(karauri, "estimate", fake_estimate)
+    result = assert_json_ok(api.estimate_short_all())
+    assert result["data"] == {"targets": 1, "skipped": 0, "interval_sec": 10, "eta_sec": 10, "contact_ok": True}
+
+
+def test_estimate_short_all_passes_symbols_through(supply_env, monkeypatch):
+    api, *_ = supply_env
+    received = []
+
+    def fake_estimate(db_arg, settings_arg, symbols=None):
+        received.append(symbols)
+        return {"targets": 0, "skipped": 0, "interval_sec": 10, "eta_sec": 0, "contact_ok": True}
+
+    monkeypatch.setattr(karauri, "estimate", fake_estimate)
+    api.estimate_short_all(["1234.T"])
+    assert received == [["1234.T"]]
+
+
+def test_estimate_short_all_without_settings_configured(env):
+    api, *_ = env
+    result = assert_error(api.estimate_short_all())
+    assert "設定" in result["error"]

@@ -84,10 +84,11 @@
 
 | 項目 | 内容 |
 |---|---|
-| **現在のフェーズ** | P2（需給データの取得） |
-| **次にやること** | P2-1（karauri.net の合成フィクスチャ）と P2-3（日証金の列定義の確定）。どちらも実サイトへ**各1回だけ**アクセスして実物を `tests/fixtures/real/` に採取する作業で、この進め方はユーザー了承済み（2026-09-20）。採取はメインが行い、以後の実装は §0「作業の進め方」に従って Sonnet のサブエージェントに分担させる |
-| **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。設計文書一式（レビュー結果・SPEC/PLAN 1.1 を含む）を `main` にマージし、**`origin/main` に push 済み**（`main` は `origin/main` を追跡）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
-| **動作確認** | 2026-09-20、P1 完了時点で `.venv\Scripts\python.exe -m pytest` は **337 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバー（ブラウザ）でジョブの進捗・中断、起動時の自動更新（実際に yfinance から2銘柄を更新）、設定タブの保存・検証・キーの表示と削除を確認済み。pywebview のウィンドウ（`start.bat`）での起動確認をユーザーに依頼し、「全て問題ない」との回答（2026-09-20） |
+| **現在のフェーズ** | P3（需給のチャート表示） |
+| **次にやること** | P3-1（dashboard payload に `chart.short` / `chart.taisyaku` を足す）。**`prices.date` に存在する日付だけ**を載せる（whitespace は使わない）。そのあと P3-2（空売りペイン・**`LWC.LineType.WithSteps`**）→ P3-3（貸借ペイン・欠測で線を切る。§5-2 を解消）→ P3-4 |
+| **リポジトリ状態** | 作業ブランチは **`feature/p2-supply`**（`main` から分岐）。`main` は `origin/main` を追跡し P1 完了時点まで push 済み。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
+| **外部アクセスの消費** | 2026-09-20 に P2-1・P2-3 の採取を実施済み（karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回）。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらのサイトへはアクセスしない**。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` |
+| **動作確認** | 2026-09-20、P2 完了時点で `.venv\Scripts\python.exe -m pytest` は **440 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
 
 ### フェーズの状態
 
@@ -95,7 +96,7 @@
 |---|---|---|
 | P0 | 準備・設計文書・レビュー反映 | DONE |
 | P1 | 基盤（設定・HTTPクライアント・ジョブ・**起動時自動更新**） | DONE |
-| P2 | 需給データの取得 | TODO |
+| P2 | 需給データの取得 | DONE |
 | P3 | 需給のチャート表示 | TODO |
 | P4 | 開示の取得・突合・分類 | TODO |
 | P5 | イベントマーカーとイベント欄 | TODO |
@@ -137,13 +138,13 @@
 
 | ID | 状態 | タスク | 完了条件 | 依存 | 対象 |
 |---|---|---|---|---|---|
-| P2-1 | `TODO` | karauri.net の合成フィクスチャ作成 | 実ページを**1回だけ**取得して `tests/fixtures/real/`（Git 対象外）に置き、構造を写した**合成 HTML** を `tests/fixtures/karauri_synthetic.html` として作る（SPEC §10.1 の行パターンを含む）。実物の採取は現役の報告者が多い銘柄で行う（7203 は約40行・最新 2022-04 で通常行が無い） | P1-5 | `tests/fixtures/` |
-| P2-2 | `TODO` | 空売り残高の取得とパース | SPEC §2.2.1〜2.2.2・§2.2.4。`holder_id` 抽出、銘柄単位の全置換、列数違いでエラー、403/429 で即中止。`test_karauri.py` | P2-1 | `sources/karauri.py` `database.py` |
-| P2-3 | `TODO` | **日証金の列定義の確定** | `zandaka.csv` `meigara.csv` を各1回取得して `tests/fixtures/real/` に置き、`cp932` で読んで全列名・速報/確報の区分値・区分列の意味を **SPEC §2.3.1 と §3 に追記**（§9-1 を解消）。合成 CSV を作る。※固定名・最新日のみ・約36列であることはレビューで確認済み | P0-6 | `docs/SPEC.md` `tests/fixtures/` |
-| P2-4 | `TODO` | 貸借取引残高の取得とパース | SPEC §2.3。ヘッダ名で列を引く、登録銘柄の行だけ保存、確報が速報を上書き（逆はしない）、貸借銘柄でない場合はエラーにしない。`test_taisyaku.py` | P2-3 P1-5 | `sources/taisyaku.py` `database.py` |
-| P2-5 | `TODO` | 空売り残高合計の算出 | SPEC §2.2.3。`holder_id` ごとの最新採用、消失の二重条件、該当者なしで 0。`test_short_totals.py` | P2-2 | `service.py` |
-| P2-6 | `TODO` | 取得UI | 空売りの一括取得を `short_all` ジョブで。実行前に「対象銘柄数 × 間隔」を提示して確認、進捗と中断。`scrape_contact` 未設定なら実行不可。単一銘柄の取得、日証金の手動取得 | P2-2 P2-4 P1-6 | `api.py` `app.js` |
-| P2-7 | `TODO` | 自動更新への組み込み（需給） | SPEC §2.8.2 の順2・順4。日証金は既定で含める。空売りは `auto_update_short`（既定 false）のときだけ、`short_recheck_hours` を守る。`test_autoupdate.py` に追加 | P2-6 P1-7 | `autoupdate.py` |
+| P2-1 | `DONE` | karauri.net の合成フィクスチャ作成 | 実ページを**1回だけ**取得して `tests/fixtures/real/`（Git 対象外）に置き、構造を写した**合成 HTML** を `tests/fixtures/karauri_synthetic.html` として作る（SPEC §10.1 の行パターンを含む）。実物の採取は現役の報告者が多い銘柄で行う（7203 は約40行・最新 2022-04 で通常行が無い） | P1-5 | `tests/fixtures/` |
+| P2-2 | `DONE` | 空売り残高の取得とパース | SPEC §2.2.1〜2.2.2a・§2.2.4。`holder_id` 抽出、**最小計算日以降だけの置換**（全置換はしない）、列数違いでエラー、403/429 で即中止。`test_karauri.py` | P2-1 | `sources/karauri.py` |
+| P2-3 | `DONE` | **日証金の列定義の確定** | `zandaka.csv` `meigara.csv` を各1回取得して `tests/fixtures/real/` に置き、`cp932` で読んで全列名・速報/確報の区分値・区分列の意味を **SPEC §2.3.1 と §3 に追記**（§9-1 を解消）。合成 CSV を作る。※固定名・最新日のみ・約36列であることはレビューで確認済み | P0-6 | `docs/SPEC.md` `tests/fixtures/` |
+| P2-4 | `DONE` | 貸借取引残高の取得とパース | SPEC §2.3。ヘッダ名で列を引く、**東証の行だけを採用**、登録銘柄の行だけ保存、確報が速報を上書き（逆はしない）、貸借銘柄でない場合はエラーにしない。`test_taisyaku.py` | P2-3 P1-5 | `sources/taisyaku.py` |
+| P2-5 | `DONE` | 空売り残高合計の算出 | SPEC §2.2.3。`holder_id` ごとの最新採用、消失の二重条件、該当者なしで 0。`test_short_totals.py` | P2-2 | `sources/karauri.py` |
+| P2-6 | `DONE` | 取得UI | 空売りの一括取得を `short_all` ジョブで。実行前に「対象銘柄数 × 間隔」を提示して確認、進捗と中断。`scrape_contact` 未設定なら実行不可。単一銘柄の取得、日証金の手動取得 | P2-2 P2-4 P1-6 | `api.py` `app.js` |
+| P2-7 | `DONE` | 自動更新への組み込み（需給） | SPEC §2.8.2 の順2・順4。日証金は既定で含める。空売りは `auto_update_short`（既定 false）のときだけ、`short_recheck_hours` を守る。`test_autoupdate.py` に追加 | P2-6 P1-7 | `autoupdate.py` |
 
 ### P3 — 需給のチャート表示
 
@@ -203,6 +204,8 @@
 | 1 | 2026-09-20 | P0-1, P0-2, P0-3 | 土台クローン・リモート設定。サブエージェント4本でリサーチ。RESEARCH/DESIGN/SPEC/PLAN/REVIEW_REQUEST 作成。方針3点をユーザー確定（日証金＋karauri併用 / AIへ需給を送らない / EDINETのみ）。ブランチ `docs/initial-design` にコミット |
 | 2 | 2026-09-20 | P0-4 | fable による設計レビュー（重大4・中12・軽微5・提案3）。一次情報と同梱ライブラリで事実確認し、土台のテスト 252 passed を確認。ユーザーが推奨案をすべて承認し、**起動時の自動更新**を追加要望。SPEC/PLAN を 1.1 に更新、RESEARCH/DESIGN に訂正表を追加。タスクは 38 → 43。別 PC への移行手順を SPEC §2.1.4 に追加。ユーザーが全体を承認し、コミットして `main` にマージ、`origin` に push（P0-5）。push 時に GitHub のメール保護で拒否されたため、未 push の4コミットの作者メールを noreply アドレスに書き換えた（内容は不変） |
 | 3 | 2026-09-20 | P0-5, P0-6, P1-1〜P1-8 | push（GitHub のメール保護で拒否されたため未 push の4コミットの作者メールを noreply に書き換え）。NOTICE・CLAUDE.md・`.gitignore`。P1（基盤）を完了: 改名、依存追加、マイグレーション（DDL を含めてロールバックできるよう明示トランザクション化）、設定（keyring）、共通HTTPクライアント、ジョブ基盤、起動時の自動更新（株価）、設定タブ。開発は `.venv` で行う。337 passed。レビューの NOTICE 著作権年の指摘は誤りと判明し撤回。`main` にマージして push 済み |
+| 6 | 2026-09-20 | P2-6, P2-7 | 取得UI（一括取得は `short_all` ジョブ・事前に所要時間を提示して確認・403/429 で即中止・連続3回の失敗で中止）と、起動時の自動更新への組み込み（日証金は既定で実行、空売りは `auto_update_short` がオンのときだけ。自動更新側の打ち切りは株価と同じ**連続2回**）。メインのレビューで、API 名を SPEC の `estimate_short_all` に統一し、日証金の要約に `None` が出る分岐を直した。**P2 完了**。440 passed / 15 skipped |
+| 5 | 2026-09-20 | P2-1〜P2-5 | 実物を各1回採取（karauri `/6920/`・日証金 `zandaka.csv` `meigara.csv`）。**karauri の銘柄別ページは直近100件まで**と判明し、保存を全置換から「最小計算日以降だけの置換」に変更。**日証金 CSV は同一コードが市場ごとに複数行**あると判明し、東証の行だけを採用する規則を追加。`zandaka.csv` の全36列を SPEC に記載して §9-1 を解消。パーサ・保存・合計算出を Sonnet のサブエージェント2本（karauri / 日証金）で並行実装し、メインが差分をレビューして設定キー・日付書式の検証・浮動小数の丸めを修正。実物に対する構造テスト（`test_real_fixtures.py`）を追加。391 passed / 15 skipped |
 | 4 | 2026-09-20 | （引き継ぎ） | ユーザーが P1 までの成果を承認。次のセッションから **メインは指揮、実装・テストは Sonnet のサブエージェントを複数起動して行う**方針を指示（§0 に手順を追加）。P2 の実サイトへの各1回のアクセスも了承済み。次は P2-1・P2-3 |
 
 ---
@@ -234,6 +237,12 @@
 16. **長時間処理はジョブで実行し、HTTP 待ちの間に DB の書き込みロックを持たない**（SPEC §2.8.1）
 17. **自動更新は起動時の1回だけ。** 常駐ポーリングにしない。失敗してもダイアログで起動を妨げない（SPEC §2.8.2）
 18. **`margin_balances` は再取得できない。** マイグレーションで DROP しない（SPEC §3.1）
+19. **空売り残高を銘柄単位で全置換しない。** karauri の銘柄別ページは**直近100件まで**しか載らないので、
+    全置換すると101件目より古い収集済みの行が消える。削除するのは「取得した行の最小計算日以降」だけ（SPEC §2.2.2a）
+20. **日証金 CSV は同じ銘柄コードが市場ごとに複数行ある。** `取引所区分名` に「東証」を含む行だけを採用する。
+    絞らないと PK `(symbol, date)` を市場違いの行で上書きし合う（SPEC §2.3.1）
+21. **日証金の未知の速報/確報区分でエラーにして保存を止めない。** `prelim` として保存し警告ログを出す。
+    取り直せないデータを表記ゆれで失わないため（SPEC §2.3.1）
 
 ### 実装メモ（後続タスク向け）
 
@@ -247,6 +256,22 @@
 - 画面の確認は開発サーバー（`python dev_server.py` → `http://127.0.0.1:8765/?dev`）で行える。データを汚さないよう `CHRONOS_DATA_DIR` を一時フォルダに向けること
 - 外部取得は `app/sources/base.py` の `HttpClient(source, min_interval, agent=..., no_retry_statuses=...)`。間隔とロックはソース名で共有される。`get(url, params, cancel=Event)` は 2xx 以外で `HttpError(status)`、中断で `Cancelled`。karauri は `no_retry_statuses=frozenset({403, 429})` を渡すこと。テストでは `session` / `clock` / `sleep` を差し替える
 - 設定は `app/settings.py` の `Settings`。キーの追加は `SPECS` に足す。API キーは `get_secret()`（環境変数 → keyring の順）。テストでは `keyring_backend` にフェイクを渡す
+- 需給の3テーブル（`short_positions` `short_totals` `margin_balances`）はマイグレーション **v2**（`app/database.py` の `_migrate_v2`）で作成済み。
+  各ソースの保存関数は `app/database.py` ではなく `app/sources/<ソース>.py` に置き、`Database` を引数で受ける（同じファイルを複数の担当が触らないため）
+
+- 需給ソースの公開関数（P2-6・P2-7 から呼ぶ）:
+  - `app/sources/karauri.py`: `make_client(settings)` / `fetch_html(client, code, cancel=None)` / `parse(html)` /
+    `compute_totals(rows)` / `save(db, symbol, rows) -> {"rows", "dates", "since"}`
+  - `app/sources/taisyaku.py`: `make_client(settings=None)` / `fetch_zandaka(client, cancel=None)` / `parse(content: bytes)` /
+    `save(db, rows, symbols, fetched_at=None) -> {"saved", "skipped", "date", "missing"}` /
+    `fetch_and_save(db, settings=None, symbols=None, cancel=None, client=None)`（取得〜保存。1リクエストなのでブロッキング）
+  - karauri の取得の入口: `select_targets(db, settings, symbols=None, force=False)` / `estimate(db, settings, symbols=None)` /
+    `fetch_one(db, settings, symbol, cancel=None, client=None)` / `short_all_job(db, settings)`（`jobs.register("short_all", ...)` 用）
+  - **P2-7 はこれらを呼ぶこと**（取得ロジックを autoupdate 側に書き直さない）
+- `.gitattributes` は既定で `* text=auto eol=lf`。**改行をそのまま保ちたいフィクスチャは `-text` を明示する**
+  （日証金の合成 CSV は cp932・CRLF。放っておくと LF に正規化されて実物と構造が変わる。`test_taisyaku.py` が検知する）
+- `tests/test_real_fixtures.py` は `tests/fixtures/real/` に実物があるときだけ走る（無ければ skip）。
+  値は見ずに構造だけを検証し、合成フィクスチャが実物からずれていないかの保険にする
 
 ### 外部アクセスの作法
 
@@ -261,12 +286,13 @@
 
 | # | 状態 | 内容 | 解決方法 | 期限 |
 |---|---|---|---|---|
-| 1 | `OPEN` | 日証金 `zandaka.csv` の全列名・速報/確報の区分値。`margin_balances` の残高系カラムは推定に基づく | P2-3 で `cp932` で読んで SPEC を更新 | P2-4 着手前 |
+| 1 | `CLOSED` | 日証金 `zandaka.csv` の全列名・速報/確報の区分値 | P2-3 で確定。SPEC §2.3.1 に全36列を記載。`速報` の実値だけは未観測だが、**未知の区分値は `prelim` として保存する**設計にしたので実装はブロックされない | 解消（2026-09-20） |
 | 2 | `OPEN` | 貸借取引残高の欠測で線を切る実装方法 | P3-3 で試作して決める | P3-3 |
 | 3 | `OPEN` | `usage_metadata` のフィールド名、429 エラー詳細の実構造、thinking 予算の指定方法 | P6-1 で実物を1回採取 | P6-1 |
 | 4 | `OPEN` | EDINET 利用規約の正確な文言（調査時は AI 要約経由だった） | P4-1 で原文を確認 | P4-1 |
 | 5 | `OPEN` | EDINET コードリスト CSV の文字コード・列構成 | P4-1 で確認 | P4-1 |
 | 6 | `OPEN` | EDINET 書類閲覧ページの URL 形式 | P4-4 で確認。不可なら PDF 一時取得方式 | P4-4 |
+| 7 | `OPEN` | karauri.net の銘柄別ページが本当に100件で打ち切られているか（ページャは無かったが、上限値そのものは公表されていない） | 上限を前提にした保存方法（SPEC §2.2.2a）は、上限が無かった場合でも正しく動く。再取得はしない。将来 101 件以上のページを観測したら本行を閉じる | なし（設計で吸収済み） |
 
 ---
 
@@ -285,6 +311,12 @@
 | 2026-09-20 | 実装・テストなどの細かい作業は Sonnet のサブエージェントを複数起動して行い、メインのモデルは指揮に回る | ユーザーの指示。手順と注意点は §0「作業の進め方」 | ユーザー |
 | 2026-09-20 | 自動更新でソースを打ち切るのは「連続2回の失敗」 | 最初の失敗で打ち切ると、先頭の銘柄が銘柄固有の理由で失敗するだけで残りが更新されなくなる | 実装時の判断（P1-7） |
 | 2026-09-20 | APIキーは `keyring`、`data/` の既定位置は変えず同期フォルダ配下なら警告 | 作業ディレクトリが OneDrive 配下。既定位置の変更は土台の README・運用との差が大きいため警告に留めた | レビュアー提案を承認 |
+| 2026-09-20 | karauri の `scrape_contact` はリポジトリ URL（`https://github.com/satsuki19980613/Chronos-Chart`）にする | 連絡先は名乗るが、個人のメールアドレスを第三者サイトのログに残さない | ユーザー |
+| 2026-09-20 | 空売り残高の保存は「取得した行の最小計算日以降だけを置換」に変更（全置換をやめる） | P2-1 の採取で、銘柄別ページが**直近100件まで**と判明。全置換だと古い収集済みの行が消える | 実装時の判断（P2-1） |
+| 2026-09-20 | 日証金 CSV は `取引所区分名` に「東証」を含む行だけを採用する | P2-3 の採取で、同一コードが市場ごとに複数行あると判明（4759 行中 377 コード）。PK が `(symbol, date)` なので絞らないと上書きし合う | 実装時の判断（P2-3） |
+| 2026-09-20 | 日証金の未知の速報/確報区分は、エラーにせず `prelim` として保存する | `速報` の実値を観測できなかった。`margin_balances` は取り直せないので、表記ゆれで1日分を失うほうが害が大きい | 実装時の判断（P2-3） |
+| 2026-09-20 | `meigara.csv` は構造を記録するだけで、初期リリースでは取得しない | 貸借銘柄区分 `1`/`2` の意味が確定できず、更新のたびに1リクエスト増えるわりに得られるのは画面の文言の精度だけ | 実装時の判断（P2-3） |
+| 2026-09-20 | 各ソースの保存関数は `app/database.py` ではなく `app/sources/<ソース>.py` に置く | サブエージェントを並行させるときに `database.py` が衝突点になるため。移行（DDL）だけをメインが `database.py` に入れる | 実装時の判断（P2） |
 
 ---
 

@@ -23,6 +23,7 @@ from app.fetcher import YahooFetcher
 from app.jobs import JobManager, selftest_job
 from app.service import StockService
 from app.settings import Settings
+from app.sources.karauri import short_all_job
 
 
 def make_handler(api: Api):
@@ -73,6 +74,7 @@ def main() -> None:
     jobs = JobManager()
     settings = Settings(db, data_dir=DATA_DIR)
     jobs.register("auto_update", AutoUpdater(db, service, settings).run)
+    jobs.register("short_all", short_all_job(db, settings))
     jobs.register("selftest", selftest_job)
     api = Api(service, jobs, settings)
 

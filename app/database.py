@@ -298,8 +298,65 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v2(conn: sqlite3.Connection) -> None:
+    """需給データ（SPEC §3）。空売り残高・その合計・貸借取引残高。"""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS short_positions (
+            symbol      TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+            calc_date   TEXT NOT NULL,
+            holder_id   TEXT NOT NULL,
+            holder      TEXT NOT NULL,
+            ratio       REAL,
+            ratio_delta REAL,
+            quantity    INTEGER,
+            qty_delta   INTEGER,
+            note        TEXT,
+            PRIMARY KEY (symbol, calc_date, holder_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_short_positions_symbol_date "
+        "ON short_positions(symbol, calc_date)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS short_totals (
+            symbol      TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+            date        TEXT NOT NULL,
+            total_ratio REAL,
+            total_qty   INTEGER,
+            holders     INTEGER,
+            PRIMARY KEY (symbol, date)
+        )
+        """
+    )
+    # 日証金の貸借取引残高。過去分を取り直す手段が無いので、以後の移行で DROP しないこと。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS margin_balances (
+            symbol        TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+            date          TEXT NOT NULL,
+            settle_date   TEXT,
+            kind          TEXT NOT NULL,
+            yushi_new     INTEGER,
+            yushi_repay   INTEGER,
+            yushi_balance INTEGER,
+            kashi_new     INTEGER,
+            kashi_repay   INTEGER,
+            kashi_balance INTEGER,
+            net_balance   INTEGER,
+            fetched_at    TEXT NOT NULL,
+            PRIMARY KEY (symbol, date)
+        )
+        """
+    )
+
+
 # (バージョン, 移行関数)。追加するときは末尾に足し、既存の関数は書き換えない。
 # 貸借取引残高（margin_balances）は再取得できないので、どの移行でも DROP しないこと。
 MIGRATIONS = [
     (1, _migrate_v1),
+    (2, _migrate_v2),
 ]

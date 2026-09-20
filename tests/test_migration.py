@@ -21,6 +21,33 @@ def test_fresh_db_gets_latest_schema(tmp_path):
     assert db.init_schema() is False
     assert db.schema_version() == LATEST
     assert {"stocks", "prices", "indicators", "settings", "fetch_log"} <= _tables(db)
+    assert {"short_positions", "short_totals", "margin_balances"} <= _tables(db)
+
+
+def test_margin_balances_survives_migration(tmp_path, monkeypatch):
+    """貸借取引残高は取り直せないので、後続の移行で消えてはならない（SPEC §3.1）。"""
+    path = tmp_path / "keep.db"
+    db = Database(path)
+    db.init_schema()
+    db.upsert_stock("7203.T", "7203", "Toyota", "東証", "JPY")
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO margin_balances (symbol, date, settle_date, kind, yushi_balance, "
+            "kashi_balance, net_balance, fetched_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("7203.T", "2026-09-17", "2026-09-24", "final", 820900, 0, 820900, "2026-09-20 10:00:00"),
+        )
+
+    def migrate_next(conn):
+        conn.execute("CREATE TABLE IF NOT EXISTS later (x INTEGER)")
+
+    monkeypatch.setattr(database, "MIGRATIONS", [*MIGRATIONS, (LATEST + 1, migrate_next)])
+    Database(path).init_schema()
+
+    with Database(path).connect() as conn:
+        rows = conn.execute("SELECT * FROM margin_balances").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["yushi_balance"] == 820900
+    assert rows[0]["kind"] == "final"
 
 
 def test_migration_versions_are_strictly_increasing():

@@ -55,7 +55,10 @@
       <div class="panel">
         <div class="panel-head row">
           <h2>登録済み銘柄 <span class="count" id="stock-count">0</span></h2>
-          <button class="btn" id="update-all">全銘柄を更新</button>
+          <div class="btn-row">
+            <button class="btn" id="update-all">全銘柄を更新</button>
+            <button class="btn" id="short-all" title="設定タブで karauri.net への連絡先を入力してください">空売り残高を一括取得</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="table">
@@ -69,6 +72,7 @@
           </table>
         </div>
         <p class="empty" id="stock-empty">まだ銘柄が登録されていません。上の検索から登録してください。</p>
+        <p class="hint">空売り残高の一括取得は個人運営サイト（karauri.net）へのアクセスです。取得は深夜〜早朝の実行を推奨します（公表は取引時間外のため）。</p>
       </div>
     </section>
 
@@ -77,8 +81,12 @@
       <div class="dash-toolbar">
         <select class="input select" id="stock-select" aria-label="銘柄"></select>
         <button class="btn" id="dash-update">最新データに更新</button>
+        <button class="btn" id="dash-fetch-short">空売り残高を取得</button>
+        <button class="btn" id="dash-fetch-taisyaku">貸借取引残高（日証金）を取得</button>
         <span class="toolbar-note" id="dash-updated"></span>
       </div>
+      <p class="hint" id="dash-supply-hint">空売り残高の合計は本ツールが算出した値です（発行済株式総数の0.5%以上の報告義務がある機関のみが対象。0 は「空売りがない」ではなく、該当する報告者がいないことを意味します）。
+        貸借取引残高（日証金）は貸借銘柄のみが対象で、本ツールで取得を始めた日以降のデータしかありません。</p>
 
       <p class="empty big" id="dash-empty">登録済みの銘柄がありません。「登録」タブから銘柄を登録してください。</p>
 
