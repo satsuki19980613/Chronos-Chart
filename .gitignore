@@ -1,6 +1,9 @@
 # 取得データ（DB・CSV・ログ）は公開しない
 data/
 
+# 第三者サイトから採取した実データ（構造確認用）。再配布に当たるためコミットしない（docs/SPEC.md §10.1）
+tests/fixtures/real/
+
 # Python
 __pycache__/
 *.py[cod]

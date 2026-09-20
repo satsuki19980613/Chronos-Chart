@@ -136,7 +136,7 @@ def render_markdown(data: list[StockData], generated_at: datetime | None = None)
     out = io.StringIO()
     w = out.write
 
-    w("# Autotechnical technical indicator export\n\n")
+    w("# Chronos Chart technical indicator export\n\n")
     w("## context\n\n")
     w(f"- generated_at: {generated_at:%Y-%m-%dT%H:%M:%S}\n")
     w(f"- symbols: {', '.join(d.stock['symbol'] for d in data)}\n")

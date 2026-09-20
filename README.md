@@ -1,7 +1,12 @@
-# Autotechnical
+# Chronos Chart
 
 Yahoo! Finance から個別銘柄の株価（始値・高値・安値・終値・出来高）を取得し、
 日ごとのテクニカル指標を計算・保存・チャート表示するローカル GUI ツールです。
+
+> [Autotechnical](https://github.com/satsuki19980613/Autotechnical) を土台に、需給（空売り残高・貸借取引残高）、
+> EDINET の法定開示、起動時の自動更新、Gemini による分析レポートを追加していく開発中のプロジェクトです。
+> 仕様は [docs/SPEC.md](docs/SPEC.md)、進捗は [docs/PLAN.md](docs/PLAN.md) を参照してください。
+> 以下は現時点で動作する機能（土台由来）の説明です。
 
 - **GUI**: Python + [pywebview](https://pywebview.flowrl.com/)（画面は HTML / CSS / JavaScript）
 - **データ取得**: [yfinance](https://github.com/ranaroussi/yfinance)
@@ -66,8 +71,8 @@ Yahoo! Finance から個別銘柄の株価（始値・高値・安値・終値�
 Python 3.10 以上が必要です。
 
 ```bash
-git clone https://github.com/<your-account>/Autotechnical.git
-cd Autotechnical
+git clone https://github.com/satsuki19980613/Chronos-Chart.git
+cd Chronos-Chart
 python -m venv .venv
 .venv\Scripts\activate        # macOS / Linux は source .venv/bin/activate
 pip install -r requirements.txt
@@ -94,7 +99,7 @@ python main.py
 
 ```
 data/
-├── autotechnical.db                  # SQLite（stocks / prices / indicators テーブル）
+├── chronos.db                  # SQLite（stocks / prices / indicators テーブル）
 ├── csv/
 │   ├── 7203.T_株価.csv               # 日付・始値・高値・安値・終値・出来高
 │   └── 7203.T_テクニカル指標.csv     # 日付・終値・日ごとのテクニカル指標
@@ -106,7 +111,7 @@ output/                               # 出力タブで作成した AI 向けフ
   株価単位の指標は株価と同じ桁・その他は小数2桁）。正となるデータは SQLite 側です。
   - 一目均衡表の遅行線は「25営業日後の終値」をその日の行に置くため、直近25行は空欄になります。
 - CSV を Excel で開いたまま更新すると CSV の書き込みだけスキップされ、画面に警告が出ます。
-- 保存先は環境変数 `AUTOTECHNICAL_DATA_DIR`（データ）/ `AUTOTECHNICAL_OUTPUT_DIR`（出力）で変更できます。
+- 保存先は環境変数 `CHRONOS_DATA_DIR`（データ）/ `CHRONOS_OUTPUT_DIR`（出力）で変更できます。
 
 ## 構成
 
@@ -143,10 +148,10 @@ python -m pytest
 | `test_service.py` / `test_api.py` | 登録・更新・分割・削除・出力、JS 向け API の正常系/異常系/並行実行 |
 | `test_export.py` | AI 向け CSV/Markdown と閲覧用 CSV の形式 |
 | `test_dev_server.py` | 開発用サーバーの HTTP 応答・不正リクエスト・パストラバーサル |
-| `test_live_yahoo.py` | 実際の Yahoo! Finance との通信（`AUTOTECHNICAL_LIVE=1` のときだけ実行） |
+| `test_live_yahoo.py` | 実際の Yahoo! Finance との通信（`CHRONOS_LIVE=1` のときだけ実行） |
 
 ```bash
-AUTOTECHNICAL_LIVE=1 python -m pytest tests/test_live_yahoo.py
+CHRONOS_LIVE=1 python -m pytest tests/test_live_yahoo.py
 ```
 
 ブラウザで画面を確認したいときは `python dev_server.py` を起動し、`http://127.0.0.1:8765/?dev` を開きます。
