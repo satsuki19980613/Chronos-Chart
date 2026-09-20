@@ -297,9 +297,9 @@ def disclosures_job(db, settings, base_dir: Path | None = None) -> Callable[[Job
 _REPORT_CODES = {"120", "130", "140", "150", "160", "170"}  # 有報・四半期（過去分のみ）・半期報
 _SUPPLY_EXACT_CODES = {"350", "360", "220", "230"}  # 大量保有・自己株買付
 _MAJOR_HOLDING_CODES = {"350", "360"}  # 大量保有報告書
-# 公開買付関連。分類（§2.4.6 で supply）と突合（§2.4.3 で subject / filer の両方）の両方で使うので、
-# 定義は1か所だけにする
-_TENDER_OFFER_RANGE = (240, 320)
+# 公開買付関連。分類（§2.4.6 で supply）と突合（§2.4.3 で subject / filer の両方）に加えて
+# app/events.py のラベル付けでも使うので、定義は1か所だけにする（app.events から import する）
+TENDER_OFFER_RANGE = (240, 320)
 
 
 def classify(doc_type_code: str | None) -> str:
@@ -318,7 +318,7 @@ def classify(doc_type_code: str | None) -> str:
         n = int(code)
     except ValueError:
         return "other"
-    if _TENDER_OFFER_RANGE[0] <= n <= _TENDER_OFFER_RANGE[1]:
+    if TENDER_OFFER_RANGE[0] <= n <= TENDER_OFFER_RANGE[1]:
         return "supply"
     return "other"
 
@@ -488,7 +488,7 @@ def match_roles(doc: dict, targets: dict) -> list[tuple[str, str]]:
         return roles
 
     n = _doc_type_as_int(doc_type_code)
-    if n is not None and _TENDER_OFFER_RANGE[0] <= n <= _TENDER_OFFER_RANGE[1]:
+    if n is not None and TENDER_OFFER_RANGE[0] <= n <= TENDER_OFFER_RANGE[1]:
         # 公開買付関連: 対象会社（subject）と買付者・意見表明者（filer）の両方が成立し得る。
         subject_code = doc.get("subject_edinet_code")
         if subject_code:
@@ -696,12 +696,13 @@ def list_for_symbol(db, symbol: str) -> dict:
     書類ごとに1件へまとめて `roles` に配列で持つ。`items` は `submit_at` の降順（同じ `submit_at`
     なら `doc_id` の昇順で安定させる。`roles` の並びも `role` 順に固定する）。登録が1件も無ければ `counts` は全部0、`items` は空リスト。
     `fetched_days` は EDINET を取得済みの日数（0件表示の文言を分けるために返す）。
+    `reason`（提出事由。臨時報告書以外は基本 None）も各 item に含める（SPEC §2.6）。
     """
     with db.connect() as conn:
         rows = conn.execute(
             """
             SELECT d.doc_id, d.submit_at, d.category, d.doc_type_code, d.description,
-                   d.filer_name, d.withdrawal, l.role
+                   d.reason, d.filer_name, d.withdrawal, l.role
             FROM disclosures d
             JOIN disclosure_links l ON l.doc_id = d.doc_id
             WHERE l.symbol = ?
@@ -723,6 +724,7 @@ def list_for_symbol(db, symbol: str) -> dict:
                 "roles": [],
                 "doc_type_code": row["doc_type_code"],
                 "description": row["description"],
+                "reason": row["reason"],
                 "filer_name": row["filer_name"],
                 "withdrawal": row["withdrawal"],
             }

@@ -13,19 +13,51 @@
     chartSettings: loadChartSettings(),
     exportSelected: new Set(),
     exportDays: "60",
+    visibleRange: null, // チャートの表示範囲 {from, to}（"YYYY-MM-DD"）。P5-4 でイベント欄の絞り込みに使う
+    pendingMarkerId: null, // 直近クリックされたマーカーの id（"ev:<日付>"）。P5-5 でイベント欄の強調に使う
   };
 
+  // チャートの表示範囲が変わるたびに呼ばれる（render() 登録直後にも1回呼ばれる）。
+  function onChartRangeChange(range) {
+    state.visibleRange = range;
+    renderEvents();
+  }
+
+  // マーカークリックのたびに呼ばれる。イベント欄の該当行へスクロール・強調する
+  function onMarkerClick(id) {
+    state.pendingMarkerId = id;
+    highlightEventRow(id);
+  }
+
   // ---------- 共通 ----------
+  // 保存値には「保存時点で存在したチップ id の一覧」を known として持たせる。
+  // 新しいチップ（例: disclosures）を既定 ON で追加しても、既存ユーザーの保存値には入っていないため
+  // 「既定 ON なのに保存値に無いので OFF 扱い」になってしまう。DEFAULTS で ON かつ known に無い id だけを
+  // 追加すれば、ユーザーが意図的に OFF にしたチップは復活させずに済む。この移行は今後チップを足すときにも効く
+  function migrateChipList(saved, savedKnown, allIds, defaultIds, legacyKnownIds) {
+    const known = savedKnown ? new Set(savedKnown) : legacyKnownIds; // known を持たない古い保存値の既定
+    const list = saved.filter((id) => allIds.has(id));
+    const listSet = new Set(list);
+    for (const id of defaultIds) {
+      if (allIds.has(id) && !known.has(id) && !listSet.has(id)) {
+        list.push(id);
+        listSet.add(id);
+      }
+    }
+    return list;
+  }
+
   function loadChartSettings() {
+    const overlayIds = new Set(StockChart.OVERLAYS.map((i) => i.id));
+    const paneIds = new Set(StockChart.PANES.map((i) => i.id));
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved && Array.isArray(saved.overlays) && Array.isArray(saved.panes)) {
-        const ids = (items) => new Set(items.map((i) => i.id));
-        const overlayIds = ids(StockChart.OVERLAYS);
-        const paneIds = ids(StockChart.PANES);
+        // known を持たない古い保存値は「disclosures 以外はすべて既知」とみなす（このチップを今回追加したため）
+        const legacyKnownOverlays = new Set([...overlayIds].filter((id) => id !== "disclosures"));
         return {
-          overlays: saved.overlays.filter((id) => overlayIds.has(id)),
-          panes: saved.panes.filter((id) => paneIds.has(id)),
+          overlays: migrateChipList(saved.overlays, saved.knownOverlays, overlayIds, StockChart.DEFAULTS.overlays, legacyKnownOverlays),
+          panes: migrateChipList(saved.panes, saved.knownPanes, paneIds, StockChart.DEFAULTS.panes, paneIds),
         };
       }
     } catch (_) { /* 保存値がなければ既定値 */ }
@@ -33,7 +65,16 @@
   }
 
   function saveChartSettings() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.chartSettings)); } catch (_) { /* noop */ }
+    try {
+      const payload = {
+        overlays: state.chartSettings.overlays,
+        panes: state.chartSettings.panes,
+        // 次回の移行判定用に、保存時点で存在したチップ id を控えておく
+        knownOverlays: StockChart.OVERLAYS.map((i) => i.id),
+        knownPanes: StockChart.PANES.map((i) => i.id),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (_) { /* noop */ }
   }
 
   function toast(message, type = "info", ms = 4000) {
@@ -318,6 +359,9 @@
       $("dash-fetch-short").disabled = true;
       $("dash-fetch-taisyaku").disabled = true;
       $("dash-disclosure-counts").textContent = "";
+      $("events-list").innerHTML = "";
+      $("events-empty").hidden = true;
+      $("events-summary").textContent = "";
       destroyChart();
       return;
     }
@@ -337,29 +381,25 @@
     $("stock-select").value = target;
     state.dashboard = data;
     renderDashboard();
-    await updateDisclosureCounts(target);
   }
 
-  // 開示件数の表示（SPEC §2.4.6）。取得に失敗しても、既に表示済みのチャートは妨げない
-  async function updateDisclosureCounts(symbol) {
+  // 開示件数の表示（SPEC §2.4.6）。dashboard() の戻り値にすでに events.counts/fetched_days が
+  // 入っているので、そこから同期的に作る（以前は get_disclosures を別途呼んでいた）
+  function renderDisclosureCounts(events) {
     const el = $("dash-disclosure-counts");
-    try {
-      const { counts, fetched_days: fetchedDays } = await api.call("get_disclosures", symbol);
-      if (!counts || counts.total === 0) {
-        // 「0件」には2通りある。取得済みなのに「まだ取得していません」と出すと、
-        // 済んだ取得をもう一度実行させてしまう
-        el.textContent = fetchedDays
-          ? `この銘柄の開示はまだありません（EDINET は ${fetchedDays} 日分取得済み）。`
-          : "まだ取得していません。「登録」タブの「開示を取得」から取得できます。";
-        return;
-      }
-      let text = `開示 ${counts.total}件（有報・半期報 ${counts.report} ／ 需給関連 ${counts.supply} ／ その他 ${counts.other}`;
-      if (counts.withdrawn > 0) text += ` ／ 取下げ ${counts.withdrawn}`;
-      text += "）";
-      el.textContent = text;
-    } catch (_) {
-      el.textContent = "";
+    const { counts, fetched_days: fetchedDays } = events;
+    if (!counts || counts.total === 0) {
+      // 「0件」には2通りある。取得済みなのに「まだ取得していません」と出すと、
+      // 済んだ取得をもう一度実行させてしまう
+      el.textContent = fetchedDays
+        ? `この銘柄の開示はまだありません（EDINET は ${fetchedDays} 日分取得済み）。`
+        : "まだ取得していません。「登録」タブの「開示を取得」から取得できます。";
+      return;
     }
+    let text = `開示 ${counts.total}件（有報・半期報 ${counts.report} ／ 需給関連 ${counts.supply} ／ その他 ${counts.other}`;
+    if (counts.withdrawn > 0) text += ` ／ 取下げ ${counts.withdrawn}`;
+    text += "）";
+    el.textContent = text;
   }
 
   function renderDashboard() {
@@ -382,9 +422,140 @@
 
     renderCards(data.cards, cur);
     renderSignals(data.signals);
+    renderDisclosureCounts(data.events);
     renderTable(data.table, cur);
     updateSupplyChipAvailability();
     renderChart();
+    renderEvents();
+  }
+
+  // ---------- 開示イベント欄（P5-4 / P5-5） ----------
+
+  // submit_at は "2026-09-19 15:00" / "2026-09-19 15:00:00" のどちらでも来うる想定。
+  // 秒の有無に関わらず "YYYY/MM/DD HH:MM" に整形する（秒は表示しない）
+  function formatSubmitAt(raw) {
+    if (!raw) return "";
+    const [datePart, timePart = ""] = raw.split(" ");
+    const dateFmt = datePart.replace(/-/g, "/");
+    const hm = timePart.slice(0, 5);
+    return hm ? `${dateFmt} ${hm}` : dateFmt;
+  }
+
+  // 表示範囲（チャートの visibleRange）でイベント一覧を絞り込む。
+  // marker_date が無い（まだ足が無い）行は、提出日がチャート最終日より後なら「表示範囲の右端が
+  // 最終足に達しているときだけ」末尾に出す。範囲が取れない（null）ときは全件そのまま返す
+  function filterEvents(items, range, lastDate) {
+    if (!range) return items.slice();
+    const showTail = lastDate != null && range.to >= lastDate;
+    return items.filter((item) => {
+      const date = item.marker_date ?? item.submit_at.slice(0, 10);
+      if (item.marker_date == null && lastDate != null && date > lastDate) {
+        return showTail;
+      }
+      return date >= range.from && date <= range.to;
+    });
+  }
+
+  function renderEventItem(item, lastDate) {
+    const date = item.marker_date ?? item.submit_at.slice(0, 10);
+    const withdrawn = item.withdrawal != null && item.withdrawal !== 0;
+    const classes = ["event-item"];
+    if (withdrawn) classes.push("is-withdrawn");
+    const roles = item.roles || [];
+    const showFiler = roles.includes("issuer") || roles.includes("subject");
+    const descLine = item.description
+      ? `<div class="event-desc">${f.escape(item.description)}</div>` : "";
+    const metaParts = [];
+    if (item.reason) metaParts.push(f.escape(item.reason));
+    if (showFiler && item.filer_name) metaParts.push(`提出者: ${f.escape(item.filer_name)}`);
+    const metaLine = metaParts.length ? `<div class="event-meta">${metaParts.join(" ／ ")}</div>` : "";
+    let noMarkerLine = "";
+    if (item.marker_date == null) {
+      const submitDate = item.submit_at.slice(0, 10);
+      const reasonText = lastDate != null && submitDate > lastDate
+        ? "株価の足がまだありません" : "チャートの期間より前です";
+      noMarkerLine = `<div class="event-nomarker">${reasonText}</div>`;
+    }
+    const withdrawnBadge = withdrawn ? `<span class="event-badge is-withdrawn">取下げ</span>` : "";
+    return `
+      <li class="${classes.join(" ")}" data-date="${f.escape(date)}"
+          data-marker-date="${item.marker_date ? f.escape(item.marker_date) : ""}">
+        <div class="event-row-1">
+          <span class="event-time">${f.escape(formatSubmitAt(item.submit_at))}</span>
+          <span class="event-badge category-${f.escape(item.category)}">${f.escape(item.label)}</span>
+          ${withdrawnBadge}
+          <button class="btn btn-sm event-open" data-doc-id="${f.escape(item.doc_id)}">開く</button>
+        </div>
+        ${descLine}
+        ${metaLine}
+        ${noMarkerLine}
+      </li>`;
+  }
+
+  // state.dashboard.events と state.visibleRange だけから描画する（state.chart には依存しない。
+  // renderChart() のたびに state.chart は作り直されるが、この関数はその影響を受けない）
+  function renderEvents() {
+    const events = state.dashboard?.events;
+    const listEl = $("events-list");
+    const emptyEl = $("events-empty");
+    const summaryEl = $("events-summary");
+    if (!events) {
+      listEl.innerHTML = "";
+      emptyEl.hidden = true;
+      summaryEl.textContent = "";
+      return;
+    }
+    const { items, counts, fetched_days: fetchedDays } = events;
+    const dates = state.dashboard?.chart?.dates;
+    const lastDate = dates && dates.length ? dates[dates.length - 1] : null;
+    const filtered = filterEvents(items, state.visibleRange, lastDate);
+
+    summaryEl.textContent = `表示範囲 ${filtered.length}件 ／ 全 ${counts.total}件`;
+
+    if (counts.total === 0) {
+      // 「0件」には2通りある（dash-disclosure-counts と同じ考え方）
+      listEl.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent = fetchedDays
+        ? `この銘柄の開示はまだありません（EDINET は ${fetchedDays} 日分取得済み）。`
+        : "まだ取得していません。「登録」タブの「開示を取得」から取得できます。";
+      return;
+    }
+    if (filtered.length === 0) {
+      listEl.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent = "この表示範囲に開示はありません";
+      return;
+    }
+    emptyEl.hidden = true;
+    listEl.innerHTML = filtered.map((item) => renderEventItem(item, lastDate)).join("");
+  }
+
+  // イベント欄の行クリック（委譲。#events-list に一度だけ登録する）
+  function onEventsListClick(e) {
+    const openBtn = e.target.closest(".event-open");
+    if (openBtn) {
+      e.stopPropagation();
+      api.call("open_disclosure", openBtn.dataset.docId).catch((err) => toast(err.message, "error"));
+      return;
+    }
+    const row = e.target.closest(".event-item");
+    if (!row) return;
+    const markerDate = row.dataset.markerDate;
+    if (markerDate) state.chart?.scrollToDate(markerDate);
+  }
+
+  // マーカークリック（P5-5）: 該当行（複数あり得る）を強調してスクロールする。
+  // 表示範囲の絞り込みで出ていない場合は何もしない
+  function highlightEventRow(id) {
+    const date = id.slice(3);
+    const rows = document.querySelectorAll(`#events-list .event-item[data-date="${CSS.escape(date)}"]`);
+    if (!rows.length) return;
+    rows[0].scrollIntoView({ block: "nearest" });
+    rows.forEach((row) => {
+      row.classList.add("is-marker-highlight");
+      setTimeout(() => row.classList.remove("is-marker-highlight"), 2000);
+    });
   }
 
   // 需給ペインのチップは、表示中の銘柄にデータが1件も無ければ無効化し理由を表示する。
@@ -459,14 +630,22 @@
     }
   }
 
-  function renderChart() {
+  // preserveRange: true のときは表示範囲（visibleLogicalRange）を引き継ぐ（チップ切替からの再生成用）。
+  // false（既定）のときは銘柄切替・初回表示どおり state.range（期間ボタン）で設定し直す
+  function renderChart({ preserveRange = false } = {}) {
     if (!state.dashboard) return;
+    const prevRange = preserveRange ? state.chart?.visibleLogicalRange() : null;
     destroyChart();
     state.chart = StockChart.render(
       $("chart"), $("pane-labels"), $("chart-legend"),
       state.dashboard, state.dashboard.stock.currency, state.chartSettings,
     );
-    state.chart.setRange(state.range);
+    // 購読はチャートの再生成のたびに閉じてしまうので、生成のたびに張り直す
+    state.chart.onVisibleRangeChange(onChartRangeChange);
+    state.chart.onMarkerClick(onMarkerClick);
+    const restored = prevRange && typeof prevRange.from === "number" && typeof prevRange.to === "number";
+    if (restored) state.chart.setVisibleLogicalRange(prevRange);
+    else state.chart.setRange(state.range);
   }
 
   function renderChips() {
@@ -482,7 +661,7 @@
         if (idx >= 0) list.splice(idx, 1); else list.push(btn.dataset.id);
         btn.classList.toggle("is-on", idx < 0);
         saveChartSettings();
-        renderChart();
+        renderChart({ preserveRange: true });
       };
     };
     build(StockChart.OVERLAYS, "overlays", $("overlay-chips"));
@@ -568,6 +747,7 @@
     document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
     $("search-form").addEventListener("submit", search);
     $("stock-list").addEventListener("click", onStockListClick);
+    $("events-list").addEventListener("click", onEventsListClick);
     $("update-all").addEventListener("click", updateAll);
     $("short-all").addEventListener("click", runShortAll);
     $("disclosures-fetch").addEventListener("click", () => runDisclosures(0));

@@ -12,6 +12,11 @@ window.StockChart = (function () {
     guide: "#5d6880",
   };
 
+  // 開示マーカーの見た目（SPEC §2.5.3）。売買シグナルの色（COLORS.up/down）と紛れないよう別系統の色にする
+  const EVENT_COLORS = { supply: "#fb923c", report: "#7dd3fc", other: "#8b97ad" };
+  const EVENT_SHAPES = { supply: "arrowUp", report: "circle", other: "square" };
+  const EVENT_POSITIONS = { supply: "belowBar", report: "aboveBar", other: "aboveBar" };
+
   // メインチャートに重ねる指標（チップの色は代表色）
   const OVERLAYS = [
     { id: "sma", label: "移動平均", color: "#f5b83d" },
@@ -21,6 +26,7 @@ window.StockChart = (function () {
     { id: "gmma", label: "多重移動平均", color: "#34d399" },
     { id: "parabolic", label: "パラボリック", color: "#facc15" },
     { id: "signals", label: "シグナル", color: "#e6ebf3" },
+    { id: "disclosures", label: "開示", color: "#7dd3fc" },
   ];
 
   // 下段ペインに表示する指標
@@ -40,7 +46,7 @@ window.StockChart = (function () {
   ];
 
   const DEFAULTS = {
-    overlays: ["sma", "signals"],
+    overlays: ["sma", "signals", "disclosures"],
     panes: ["volume", "macd", "rsi"],
   };
 
@@ -237,20 +243,42 @@ window.StockChart = (function () {
       }, "SAR");
     }
 
-    if (overlays.has("signals")) {
-      // ゴールデン/デッドクロスは矢印+文字、その他は小さな丸にして混み合いを抑える
-      const markers = d.signals.map((s) => {
-        const buy = s.direction === "buy";
-        const cross = s.short === "GC" || s.short === "DC";
-        return {
-          time: s.date,
-          position: buy ? "belowBar" : "aboveBar",
-          shape: cross ? (buy ? "arrowUp" : "arrowDown") : "circle",
-          color: buy ? COLORS.up : COLORS.down,
-          text: cross ? s.short : "",
-          size: cross ? 1 : 0.5,
-        };
-      });
+    // ---------- マーカー（売買シグナル + 開示） ----------
+    // 売買シグナルと開示のマーカーは1つの配列にマージして time 昇順に並べ、createSeriesMarkers を1回だけ呼ぶ。
+    // 複数回呼んでも消えはしないが、別々に設定すると同じ足での重なり回避が効かない（SPEC §2.5.3）。
+    // そのため配列の構築は overlays.has("signals") の分岐の外に出し、シグナルのチップが OFF でも
+    // 開示マーカーだけは出せるようにする（逆も同様）
+    {
+      let markers = [];
+      if (overlays.has("signals")) {
+        // ゴールデン/デッドクロスは矢印+文字、その他は小さな丸にして混み合いを抑える
+        markers = markers.concat(d.signals.map((s) => {
+          const buy = s.direction === "buy";
+          const cross = s.short === "GC" || s.short === "DC";
+          return {
+            time: s.date,
+            position: buy ? "belowBar" : "aboveBar",
+            shape: cross ? (buy ? "arrowUp" : "arrowDown") : "circle",
+            color: buy ? COLORS.up : COLORS.down,
+            text: cross ? s.short : "",
+            size: cross ? 1 : 0.5,
+          };
+        }));
+      }
+      if (overlays.has("disclosures")) {
+        // data.events はトップレベル（data.chart の外）。events が無い銘柄・古い payload でも落ちないように
+        const eventMarkers = data.events?.markers ?? [];
+        markers = markers.concat(eventMarkers.map((m) => ({
+          id: m.id, // "ev:<日付>"。P5-5 のクリック検出で param.hoveredObjectId として使う
+          time: m.date,
+          position: EVENT_POSITIONS[m.category] ?? "aboveBar",
+          shape: EVENT_SHAPES[m.category] ?? "square",
+          color: EVENT_COLORS[m.category] ?? EVENT_COLORS.other,
+          text: m.text,
+          size: 1,
+        })));
+      }
+      markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
       LWC.createSeriesMarkers(candle, markers);
     }
 
@@ -461,8 +489,69 @@ window.StockChart = (function () {
       }
     }
 
+    // ---------- 連動用 API（P5-3。イベント欄との連動に使う） ----------
+    // 表示範囲の変化・マーカークリックは、render() ごとに閉じた購読を張る（destroy 時は chart.remove() で片付く）。
+    // コールバックは配列で持ち、onXxx が複数回呼ばれても壊れないようにする（購読の張り直しのたびに増える想定）
+    const rangeCallbacks = [];
+    let rangeSubscribed = false;
+    function currentVisibleDateRange() {
+      const r = chart.timeScale().getVisibleRange();
+      if (!r || r.from == null || r.to == null) return null;
+      return { from: String(r.from), to: String(r.to) };
+    }
+    function onVisibleRangeChange(cb) {
+      rangeCallbacks.push(cb);
+      if (!rangeSubscribed) {
+        rangeSubscribed = true;
+        chart.timeScale().subscribeVisibleTimeRangeChange(() => {
+          const range = currentVisibleDateRange();
+          rangeCallbacks.forEach((fn) => fn(range));
+        });
+      }
+      // 登録した直後に現在の表示範囲で1回呼ぶ（初期表示でイベント欄が空のままにならないように）
+      cb(currentVisibleDateRange());
+    }
+
+    const markerClickCallbacks = [];
+    let markerClickSubscribed = false;
+    function onMarkerClick(cb) {
+      markerClickCallbacks.push(cb);
+      if (!markerClickSubscribed) {
+        markerClickSubscribed = true;
+        chart.subscribeClick((param) => {
+          const id = param?.hoveredObjectId;
+          if (typeof id === "string" && id.startsWith("ev:")) markerClickCallbacks.forEach((fn) => fn(id));
+        });
+      }
+    }
+
+    // その日付が画面中央付近に来るようスクロールする。現在の表示幅は保つ。
+    // dates に無い日付（休場日など）は「その日以降で最初にある足」に寄せる。それも無ければ何もしない
+    function scrollToDate(date) {
+      const ts = chart.timeScale();
+      const range = ts.getVisibleLogicalRange();
+      if (!range) return;
+      const width = range.to - range.from;
+      let idx = indexByDate.has(date) ? indexByDate.get(date) : dates.findIndex((d0) => d0 >= date);
+      if (idx === -1 || idx === undefined) return;
+      ts.setVisibleLogicalRange({ from: idx - width / 2, to: idx + width / 2 });
+    }
+
+    function visibleLogicalRange() {
+      return chart.timeScale().getVisibleLogicalRange();
+    }
+    function setVisibleLogicalRange(range) {
+      if (!range || typeof range.from !== "number" || typeof range.to !== "number") return;
+      chart.timeScale().setVisibleLogicalRange(range);
+    }
+
     return {
       setRange,
+      scrollToDate,
+      onVisibleRangeChange,
+      onMarkerClick,
+      visibleLogicalRange,
+      setVisibleLogicalRange,
       destroy() {
         ro.disconnect();
         chart.remove();
