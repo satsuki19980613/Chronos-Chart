@@ -59,8 +59,8 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P0（準備）— レビュー反映まで完了 |
-| **次にやること** | P0-6（push 前の整備）→ P0-5（push。**ユーザーの指示を待つ**）。P1-1 以降は P0-6 完了後に着手可 |
-| **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。設計文書一式（レビュー結果・SPEC/PLAN 1.1 を含む）を `docs/initial-design` にコミットし、**`main` にマージ済み（ローカルのみ）。未push**（push は P0-6 の後、ユーザーの指示を待つ） |
+| **次にやること** | P0-6（NOTICE 同梱・`.gitignore`・`CLAUDE.md`）→ P1-1 |
+| **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。設計文書一式（レビュー結果・SPEC/PLAN 1.1 を含む）を `main` にマージし、**`origin/main` に push 済み**（`main` は `origin/main` を追跡）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **動作確認** | 土台は未変更。2026-09-20 に `python -m pytest` を実行し **252 passed / 15 skipped**（skip は実通信テストのみ） |
 
 ### フェーズの状態
@@ -91,8 +91,8 @@
 | P0-2 | `DONE` | ネットリサーチと調査結果の文書化 | `docs/RESEARCH.md` | P0-1 |
 | P0-3 | `DONE` | 設計方針・仕様書・実装計画の作成 | `docs/DESIGN.md` `docs/SPEC.md` `docs/PLAN.md` | P0-2 |
 | P0-4 | `DONE` | fable によるレビューと指摘の反映 | `docs/REVIEW_RESULT.md`。全指摘の反映先を §7 に記録。SPEC/PLAN を 1.1 に更新。RESEARCH/DESIGN に訂正表を追加 | P0-3 |
-| P0-5 | `TODO` | 初期コミットと push | Chronos-Chart に土台＋docs が push されている（**ユーザーの指示を待つ**） | P0-6 |
-| P0-6 | `TODO` | push 前の整備 | (1) `.gitignore` に `tests/fixtures/real/` を追加。(2) `web/vendor/NOTICE-lightweight-charts.txt` を追加（配布元 v5.2.1 の NOTICE 実物。同梱ファイルのヘッダは `Copyright (c) 2026`）。(3) リポジトリ直下に `CLAUDE.md` を置き、「最初に `docs/PLAN.md` §0・§1・§4 を読む」と §4 の不変条件を書く | P0-4 |
+| P0-5 | `DONE` | 初期コミットと push | Chronos-Chart に土台＋docs が push されている。※ユーザーの指示により P0-6 より先に実施（2026-09-20）。実データのフィクスチャはまだ存在しないため支障なし | P0-4 |
+| P0-6 | `TODO` | リポジトリの整備（**実データを採取する P2-1・P2-3 より前に必須**） | (1) `.gitignore` に `tests/fixtures/real/` を追加。(2) `web/vendor/NOTICE-lightweight-charts.txt` を追加（配布元 v5.2.1 の NOTICE 実物。同梱ファイルのヘッダは `Copyright (c) 2026`）。(3) リポジトリ直下に `CLAUDE.md` を置き、「最初に `docs/PLAN.md` §0・§1・§4 を読む」と §4 の不変条件を書く | P0-4 |
 
 ### P1 — 基盤
 
@@ -175,7 +175,7 @@
 | # | 日付 | 実施タスク | 結果・特記事項 |
 |---|---|---|---|
 | 1 | 2026-09-20 | P0-1, P0-2, P0-3 | 土台クローン・リモート設定。サブエージェント4本でリサーチ。RESEARCH/DESIGN/SPEC/PLAN/REVIEW_REQUEST 作成。方針3点をユーザー確定（日証金＋karauri併用 / AIへ需給を送らない / EDINETのみ）。ブランチ `docs/initial-design` にコミット |
-| 2 | 2026-09-20 | P0-4 | fable による設計レビュー（重大4・中12・軽微5・提案3）。一次情報と同梱ライブラリで事実確認し、土台のテスト 252 passed を確認。ユーザーが推奨案をすべて承認し、**起動時の自動更新**を追加要望。SPEC/PLAN を 1.1 に更新、RESEARCH/DESIGN に訂正表を追加。タスクは 38 → 43。別 PC への移行手順を SPEC §2.1.4 に追加。ユーザーが全体を承認し、コミットして `main` にマージ（push はしていない） |
+| 2 | 2026-09-20 | P0-4 | fable による設計レビュー（重大4・中12・軽微5・提案3）。一次情報と同梱ライブラリで事実確認し、土台のテスト 252 passed を確認。ユーザーが推奨案をすべて承認し、**起動時の自動更新**を追加要望。SPEC/PLAN を 1.1 に更新、RESEARCH/DESIGN に訂正表を追加。タスクは 38 → 43。別 PC への移行手順を SPEC §2.1.4 に追加。ユーザーが全体を承認し、コミットして `main` にマージ、`origin` に push（P0-5）。push 時に GitHub のメール保護で拒否されたため、未 push の4コミットの作者メールを noreply アドレスに書き換えた（内容は不変） |
 
 ---
 
@@ -226,7 +226,6 @@
 | 4 | `OPEN` | EDINET 利用規約の正確な文言（調査時は AI 要約経由だった） | P4-1 で原文を確認 | P4-1 |
 | 5 | `OPEN` | EDINET コードリスト CSV の文字コード・列構成 | P4-1 で確認 | P4-1 |
 | 6 | `OPEN` | EDINET 書類閲覧ページの URL 形式 | P4-4 で確認。不可なら PDF 一時取得方式 | P4-4 |
-| 7 | `OPEN` | `origin` への push（コミットと `main` へのマージは 2026-09-20 に実施済み） | P0-6 の後、ユーザーの指示待ち（P0-5） | — |
 
 ---
 
