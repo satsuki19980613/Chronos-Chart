@@ -5,3 +5,7 @@
 # 日証金の合成フィクスチャは実物どおり cp932・CRLF で保つ（docs/SPEC.md §10.1）。
 # text=auto に任せると改行が LF に正規化され、実物と構造が変わってしまう。
 tests/fixtures/taisyaku_zandaka_*.csv -text
+
+# EDINET コードリストの合成フィクスチャも実物どおり cp932・CRLF で保つ（docs/SPEC.md §2.4.1a）。
+# 同じ理由で text=auto に任せると改行が LF に正規化され、実物と構造が変わってしまう。
+tests/fixtures/edinet_codes_synthetic.csv -text

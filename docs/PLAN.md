@@ -85,7 +85,7 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P4（開示の取得・突合・分類） |
-| **次にやること** | P4-1（EDINET クライアントとコードリスト）。**利用規約の原文を再確認して §5-4 を解消**し、コードリスト CSV の文字コード・列構成を確認して §5-5 を解消する。外部アクセスを伴うのでメインが行う |
+| **次にやること** | P4-2（書類一覧の取得ジョブと日次キャッシュ）。**API キーが無くてもフェイクの取得層で実装とテストはできる**が、完了条件のうち「1か月分でキャッシュを実測して SPEC §8 を更新」だけはキー入手後に回す |
 | **リポジトリ状態** | 作業ブランチは **`feature/p4-disclosures`**（`main` から分岐）。`main` は `origin/main` を追跡し **P3 完了時点まで push 済み**。※ P3 は `feature/p2-supply` の続きとしてコミットしてある（ブランチ名と中身がずれているが、マージ済みなので追わない）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **外部アクセスの消費** | 2026-09-20 に採取済み: karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回、**EDINET の利用規約ページ（閲覧）と `Edinetcode.zip` を各1回**。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらへはアクセスしない**。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` |
 | **動作確認** | 2026-09-20、P2 完了時点で `.venv\Scripts\python.exe -m pytest` は **440 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
@@ -159,7 +159,7 @@
 
 | ID | 状態 | タスク | 完了条件 | 依存 | 対象 |
 |---|---|---|---|---|---|
-| P4-1 | `TODO` | EDINET クライアントとコードリスト | SPEC §2.4.1・§2.4.5。キーはクエリパラメータ、1秒間隔、429バックオフ。**EDINET コードリストの取り込み**（`edinet_codes`、文字コード・列構成を確認して SPEC §9-6 を解消）。**利用規約の原文を再確認し SPEC §9-5 を解消** | P1-5 P1-4 | `sources/edinet.py` `database.py` |
+| P4-1 | `DONE` | EDINET クライアントとコードリスト | SPEC §2.4.1・§2.4.5。キーはクエリパラメータ、1秒間隔、429バックオフ。**EDINET コードリストの取り込み**（`edinet_codes`、文字コード・列構成を確認して SPEC §9-6 を解消）。**利用規約の原文を再確認し SPEC §9-5 を解消** | P1-5 P1-4 | `sources/edinet.py` `database.py` |
 | P4-2 | `TODO` | 書類一覧の取得ジョブと日次キャッシュ | SPEC §2.4.2・§2.4.4。`data/edinet_cache/` への保存、取得範囲（株価の最古日〜）、**確定済みの判定**（当日・エラーは再取得、翌日00:30以降で確定）、`disclosures` ジョブとして進捗・中断・再開。1か月分でキャッシュを実測し SPEC §8・§9-8 を更新 | P4-1 P1-6 | `sources/edinet.py` `disclosures.py` |
 | P4-3 | `TODO` | 突合・分類・キャッシュ再走査 | SPEC §2.4.3・§2.4.6。書類種別ごとの突合規則、`disclosures` / `disclosure_links`、取下げ、**銘柄登録時の再走査**、銘柄削除時の孤立書類の掃除。`test_edinet.py`（後から登録した銘柄・提出者としての大量保有が登録されないこと を含む） | P4-2 | `disclosures.py` `service.py` `database.py` |
 | P4-4 | `TODO` | 開示取得UI | 取得ボタン（ジョブ）、分類別の件数、「直近90日を取り直す」、**EDINET 閲覧ページを開く**（URL 形式を確認して SPEC §9-7 を解消。不可なら PDF 一時取得方式に変更して SPEC 更新）、設定タブの EDINET 接続テスト | P4-3 P1-8 | `api.py` `app.js` |
@@ -279,6 +279,18 @@
 - `legendItems` は `[ラベル, 色, 値配列, フォーマッタ]`。フォーマッタ省略時は従来どおり価格表示
 - データが無い銘柄では `app.js` の `updateSupplyChipAvailability()` がチップを無効化し、
   `chart.js` 側でも `panes` から外す（チップ ON のまま銘柄を切り替えても空のペインを作らない）
+
+### EDINET（P4-1 で実装済み。P4-2 以降はこれを呼ぶ）
+
+`app/sources/edinet.py`:
+
+- `make_client(settings=None)` — `source="edinet"`・1秒間隔。**429 はリトライ対象のまま**（karauri と違う）
+- `fetch_documents(client, date, api_key, cancel=None) -> dict` — `documents.json` を取って JSON を返すだけ。
+  キーは `params` で渡す（**自前で URL を組み立てない**。`mask_secrets` が効かなくなる）。
+  `metadata.status` が `"200"` 以外なら `UserFacingError`
+- `fetch_code_list` / `parse_code_list` / `save_code_list`（全置換）/ `fetch_and_save_code_list`
+- `edinet_code_for(db, symbol)` — **4桁コード + `"0"`** で `edinet_codes` を引く
+- `fetch_log` を書くのは `fetch_and_save_*` 側。`save_*` は DB だけ触る（`taisyaku` と同じ）
 
 ### `dashboard()` の需給 payload（P3-1 で確定。P3-2〜P3-4 はこれ前提）
 

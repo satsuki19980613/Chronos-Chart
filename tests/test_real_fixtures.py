@@ -9,17 +9,21 @@ from pathlib import Path
 
 import pytest
 
-from app.sources import karauri, taisyaku
+from app.sources import edinet, karauri, taisyaku
 
 REAL = Path(__file__).parent / "fixtures" / "real"
 KARAURI_HTML = next(REAL.glob("karauri_*.html"), None) if REAL.is_dir() else None
 ZANDAKA_CSV = REAL / "zandaka.csv"
+EDINET_CODES_ZIP = REAL / "Edinetcode.zip"
 
 karauri_only = pytest.mark.skipif(
     KARAURI_HTML is None, reason="採取した karauri.net の実ページが無い（Git 対象外）"
 )
 zandaka_only = pytest.mark.skipif(
     not ZANDAKA_CSV.exists(), reason="採取した zandaka.csv が無い（Git 対象外）"
+)
+edinet_codes_only = pytest.mark.skipif(
+    not EDINET_CODES_ZIP.exists(), reason="採取した Edinetcode.zip が無い（Git 対象外）"
 )
 
 
@@ -59,3 +63,20 @@ def test_taisyaku_parses_the_captured_csv():
     assert len({r["date"] for r in rows}) == 1
     assert all(r["kind"] in ("prelim", "final") for r in rows)
     assert all(len(r["date"]) == 10 and r["date"][4] == "-" for r in rows)
+
+
+@edinet_codes_only
+def test_edinet_code_list_parses_the_captured_zip():
+    rows = edinet.parse_code_list(EDINET_CODES_ZIP.read_bytes())
+
+    assert rows, "実ファイルから1行も取れていない"
+    # EDINET コードは6文字・重複なし（SPEC §2.4.1a）
+    assert all(len(r["edinet_code"]) == 6 for r in rows)
+    assert len({r["edinet_code"] for r in rows}) == len(rows)
+    # 証券コードは5桁のまま。空の行（非上場・個人など）も含まれる
+    listed = [r["sec_code"] for r in rows if r["sec_code"]]
+    assert listed and len(listed) < len(rows)
+    assert all(len(code) == 5 and code.endswith("0") for code in listed)
+    assert len(set(listed)) == len(listed)
+    # 英字を含む証券コードが文字列のまま保たれている（int にすると落ちる）
+    assert any(not code.isdigit() for code in listed)
