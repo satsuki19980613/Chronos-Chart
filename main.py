@@ -14,11 +14,13 @@ import webview
 
 from app import __version__
 from app.api import Api
-from app.config import CSV_DIR, DB_PATH, LOG_DIR, WEB_DIR
+from app.autoupdate import AutoUpdater
+from app.config import CSV_DIR, DATA_DIR, DB_PATH, LOG_DIR, WEB_DIR
 from app.database import Database
 from app.fetcher import YahooFetcher
 from app.jobs import JobManager, selftest_job
 from app.service import StockService
+from app.settings import Settings
 
 
 def setup_logging(debug: bool) -> None:
@@ -47,7 +49,10 @@ def main() -> None:
     rebuilt = service.rebuild_all(only_missing_csv=not schema_changed)
     if rebuilt:
         logging.getLogger(__name__).info("recomputed indicators/CSV for %d stocks", rebuilt)
+    settings = Settings(db, data_dir=DATA_DIR)
     jobs = JobManager()
+    # 起動時の自動更新。画面の初期化が終わったら JS 側が開始する（SPEC §2.8.2）
+    jobs.register("auto_update", AutoUpdater(db, service, settings).run)
     if args.debug:
         jobs.register("selftest", selftest_job)
     api = Api(service, jobs)

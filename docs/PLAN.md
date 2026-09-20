@@ -59,7 +59,7 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P1（基盤） |
-| **次にやること** | P1-7（起動時の自動更新・株価） |
+| **次にやること** | P1-8（設定タブUI）。その後 P2 へ |
 | **リポジトリ状態** | Autotechnical をクローンし `origin` を Chronos-Chart に変更済み。設計文書一式（レビュー結果・SPEC/PLAN 1.1 を含む）を `main` にマージし、**`origin/main` に push 済み**（`main` は `origin/main` を追跡）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **動作確認** | 2026-09-20、P1-1（改名）〜P1-3 後に `python -m pytest` で **261 passed / 15 skipped**（skip は実通信テストのみ）。GUI の実機起動は未確認 |
 
@@ -104,7 +104,7 @@
 | P1-4 | `DONE` | 設定モジュール | SPEC §2.1 の全項目の読み書き。**APIキーは `keyring`**、環境変数優先、マスク。**キーが DB とログに出ないことをテストで確認**。同期フォルダ配下の検出。`errors.py`（`UserFacingError`）。`test_settings.py` | P1-2 P1-3 | `settings.py` `errors.py` |
 | P1-5 | `DONE` | 共通HTTPクライアント | SPEC §4.1。間隔制御・直列化・UA・リトライ（**待機の下限はソースの最小間隔**）・中断フラグ対応の待機・キーのマスク。`test_sources_base.py` | P1-2 | `sources/base.py` |
 | P1-6 | `DONE` | ジョブ基盤 | SPEC §2.8.1。`start_job` / `job_status` / `cancel_job` / `active_jobs`、同種の多重起動拒否、`Event.wait` による中断。画面側のポーリングとヘッダのステータス欄（進捗・中断ボタン）。ダミージョブで動作確認。`test_jobs.py` | P1-4 | `jobs.py` `api.py` `js/jobs.js` `index.html` `style.css` |
-| P1-7 | `TODO` | **起動時の自動更新（株価）** | SPEC §2.8.2 のうち株価の部分。`init()` 完了後に JS が `auto_update` ジョブを開始。`fetch_log(source='yahoo')` の記録（手動 `update` / `update_all` でも更新）、最小間隔によるスキップ、銘柄間1秒、失敗してもダイアログを出さず結果をまとめて表示、完了後の一覧再読込と表示中銘柄の再描画、中断。`auto_update_on_start` オフで何もしない。`test_autoupdate.py` | P1-6 | `autoupdate.py` `service.py` `app.js` |
+| P1-7 | `DONE` | **起動時の自動更新（株価）** | SPEC §2.8.2 のうち株価の部分。`init()` 完了後に JS が `auto_update` ジョブを開始。`fetch_log(source='yahoo')` の記録（手動 `update` / `update_all` でも更新）、最小間隔によるスキップ、銘柄間1秒、失敗してもダイアログを出さず結果をまとめて表示、完了後の一覧再読込と表示中銘柄の再描画、中断。`auto_update_on_start` オフで何もしない。`test_autoupdate.py` | P1-6 | `autoupdate.py` `service.py` `app.js` |
 | P1-8 | `TODO` | 設定タブUI | SPEC §2.1.3。EDINETの取得手順5段階、Gemini上限の入力と注記、`scrape_contact` の注記、自動更新のオン／オフ、規約表示、同期フォルダ警告。**接続テストと打ち切り解除はここでは作らない**（P4-4・P6-6） | P1-4 | `index.html` `app.js` `style.css` `api.py` |
 
 ### P2 — 需給データの取得
@@ -213,6 +213,7 @@
 - テーブルの追加は `app/database.py` の `MIGRATIONS` の末尾に `(バージョン, 関数)` を足す。既存の移行関数は書き換えない。
   各移行は明示的なトランザクションで囲まれ、失敗時は DDL ごとロールバックされる（Python の sqlite3 は DDL を暗黙にコミットするため）
 - 開発・テストはプロジェクト直下の `.venv`（Git 対象外）で行う: `.venv\Scripts\python.exe -m pytest`。グローバルの Python には `keyring` が入っていない。`start.bat` は `.venv` があれば優先して使う
+- 自動更新は `app/autoupdate.py` の `AutoUpdater`。ソースを足すときは `self.steps` に `(名前, 関数)` を追加する。関数は `(ctx, stocks) -> {"summary": str, "failed": bool, "updated_symbols": [...]}`。スキップ判定は `_fetched_recently(source, key)`。P2-7・P4-5 はこの形に従う
 - ジョブは `app/jobs.py`。`jobs.register(kind, func)` で登録し、関数は `func(ctx, params)`。リクエストの合間に `ctx.check()`、待機は `ctx.wait(秒)`、進捗は `ctx.progress(current, total, label)`、`ctx.cancel` は `HttpClient.get(cancel=...)` にそのまま渡せる。画面側は `Jobs.run(kind, params)`（`web/js/jobs.js`）で開始〜終了待ち、進捗と中断ボタンはヘッダに自動で出る。動作確認用の `selftest` ジョブは `--debug` と開発サーバーでのみ登録される
 - 画面の確認は開発サーバー（`python dev_server.py` → `http://127.0.0.1:8765/?dev`）で行える。データを汚さないよう `CHRONOS_DATA_DIR` を一時フォルダに向けること
 - 外部取得は `app/sources/base.py` の `HttpClient(source, min_interval, agent=..., no_retry_statuses=...)`。間隔とロックはソース名で共有される。`get(url, params, cancel=Event)` は 2xx 以外で `HttpError(status)`、中断で `Cancelled`。karauri は `no_retry_statuses=frozenset({403, 429})` を渡すこと。テストでは `session` / `clock` / `sleep` を差し替える
@@ -252,6 +253,7 @@
 | 2026-09-20 | 日証金は蓄積型（レビュー指摘3の A 案）。欠測は線を切る | ファイルが固定名・最新日のみで、過去分を取り直せない | ユーザー（推奨案を承認） |
 | 2026-09-20 | **起動時に登録銘柄を自動更新する**（株価・日証金・EDINET。空売りは設定でオンにした場合のみ） | 土台に自動更新が無い。日証金の取りこぼし対策にもなる。karauri は個人運営サイトへの毎日のアクセスになるため既定オフ | ユーザー要望＋レビュアー提案 |
 | 2026-09-20 | XBRL 財務数値の DB 化と開示 PDF のローカル保存を初期リリースから外す（SPEC §11） | 1人で完遂するため。前者は利用先が AI プロンプトだけで難所が集中している | ユーザー（推奨案を承認） |
+| 2026-09-20 | 自動更新でソースを打ち切るのは「連続2回の失敗」 | 最初の失敗で打ち切ると、先頭の銘柄が銘柄固有の理由で失敗するだけで残りが更新されなくなる | 実装時の判断（P1-7） |
 | 2026-09-20 | APIキーは `keyring`、`data/` の既定位置は変えず同期フォルダ配下なら警告 | 作業ディレクトリが OneDrive 配下。既定位置の変更は土台の README・運用との差が大きいため警告に留めた | レビュアー提案を承認 |
 
 ---

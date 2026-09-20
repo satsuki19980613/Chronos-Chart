@@ -446,6 +446,30 @@
     $("export-run").addEventListener("click", runExport);
   }
 
+  // 起動時の自動更新（SPEC §2.8.2）。バックグラウンドで走り、失敗しても操作を妨げない。
+  // 「起動時の1回だけ」は Python 側が保証するので、画面の再読込で呼んでも二重には走らない
+  async function autoUpdate() {
+    if (!state.stocks.length || Jobs.isRunning("auto_update")) return;
+    let job;
+    try {
+      job = await Jobs.run("auto_update");
+    } catch (err) {
+      toast(`自動更新に失敗しました: ${err.message}`, "warn", 6000);
+      return;
+    }
+    if (job.state === "cancelled") {
+      toast("自動更新を中断しました");
+    } else if (!job.result || job.result.skipped) {
+      return;
+    } else {
+      toast(`自動更新: ${job.result.summary}`, job.result.failed ? "warn" : "info", 6000);
+    }
+    await refreshStocks();
+    const updated = job.result?.updated_symbols || [];
+    const onDashboard = $("view-dashboard").classList.contains("is-active");
+    if (onDashboard && updated.includes(state.currentSymbol)) await openDashboard(state.currentSymbol);
+  }
+
   async function init() {
     bind();
     renderChips();
@@ -456,7 +480,8 @@
       return;
     }
     await refreshStocks();
-    Jobs.resume().catch(() => {});
+    await Jobs.resume().catch(() => {});
+    autoUpdate();
   }
 
   init();
