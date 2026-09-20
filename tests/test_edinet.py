@@ -303,3 +303,141 @@ def test_make_client_uses_edinet_source_and_min_interval():
 def test_make_client_keeps_429_retryable():
     client = edinet.make_client()
     assert 429 not in client.no_retry_statuses
+
+
+# ---------- 日次キャッシュ（SPEC §2.4.2） ----------
+
+
+def test_write_cache_read_cache_roundtrip_with_japanese(tmp_path):
+    data = {"metadata": {"status": "200", "message": ""}, "results": [{"docDescription": "有価証券報告書"}]}
+    edinet.write_cache("2026-09-20", data, base_dir=tmp_path)
+    assert edinet.read_cache("2026-09-20", base_dir=tmp_path) == data
+
+
+def test_write_cache_is_byte_identical_for_same_content(tmp_path):
+    data = {"metadata": {"status": "200", "message": ""}, "results": []}
+    edinet.write_cache("2026-09-20", data, base_dir=tmp_path)
+    first = edinet.cache_path("2026-09-20", base_dir=tmp_path).read_bytes()
+    edinet.write_cache("2026-09-20", data, base_dir=tmp_path)
+    second = edinet.cache_path("2026-09-20", base_dir=tmp_path).read_bytes()
+    assert first == second
+
+
+def test_read_cache_corrupted_file_returns_none(tmp_path):
+    path = edinet.cache_path("2026-09-20", base_dir=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not gzip")
+    assert edinet.read_cache("2026-09-20", base_dir=tmp_path) is None
+
+
+def test_read_cache_missing_date_returns_none(tmp_path):
+    assert edinet.read_cache("2026-09-20", base_dir=tmp_path) is None
+
+
+def test_cache_path_rejects_invalid_date(tmp_path):
+    with pytest.raises(UserFacingError):
+        edinet.cache_path("2026-13-99", base_dir=tmp_path)
+    with pytest.raises(UserFacingError):
+        edinet.cache_path("../evil", base_dir=tmp_path)
+
+
+def test_cache_path_rejects_date_without_zero_padding():
+    """`2026-9-1` を通すと、同じ日のキャッシュが2つのファイル名で作られ fetch_log のキーともずれる。"""
+    with pytest.raises(UserFacingError):
+        edinet.cache_path("2026-9-1")
+
+
+def test_read_cache_truncated_gzip_returns_none(tmp_path):
+    """途中で切れた gzip は EOFError になる。壊れたキャッシュは無いものとして扱う（SPEC §2.4.2）。"""
+    edinet.write_cache("2026-09-20", {"metadata": {}, "results": [{"docID": "S100ABCD"}]}, base_dir=tmp_path)
+    path = edinet.cache_path("2026-09-20", base_dir=tmp_path)
+    path.write_bytes(path.read_bytes()[:-5])
+    assert edinet.read_cache("2026-09-20", base_dir=tmp_path) is None
+
+
+def test_cached_dates_sorted_ascending_and_ignores_unrelated_files(tmp_path):
+    edinet.write_cache("2026-09-20", {"metadata": {}, "results": []}, base_dir=tmp_path)
+    edinet.write_cache("2026-01-05", {"metadata": {}, "results": []}, base_dir=tmp_path)
+    (tmp_path / "readme.txt").write_text("dummy", encoding="utf-8")
+    (tmp_path / "not-a-date.json.gz").write_bytes(b"dummy")
+    assert edinet.cached_dates(base_dir=tmp_path) == ["2026-01-05", "2026-09-20"]
+
+
+def test_cached_dates_returns_empty_list_when_dir_missing(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    assert edinet.cached_dates(base_dir=missing) == []
+
+
+def test_write_cache_leaves_no_temp_file_behind(tmp_path):
+    edinet.write_cache("2026-09-20", {"metadata": {}, "results": []}, base_dir=tmp_path)
+    entries = list(tmp_path.iterdir())
+    assert [e.name for e in entries] == ["2026-09-20.json.gz"]
+
+
+# ---------- fetch_day ----------
+
+
+def test_fetch_day_empty_results_is_empty_but_writes_cache(tmp_path):
+    db = _db(tmp_path)
+    payload = {"metadata": {"status": "200", "message": ""}, "results": []}
+    client, session = _client_with(_FakeResponse(json_data=payload))
+    result = edinet.fetch_day(db, "2026-09-20", "secret-key", client=client, base_dir=tmp_path / "cache")
+
+    assert result["result"] == "empty"
+    assert result["documents"] == 0
+    assert edinet.read_cache("2026-09-20", base_dir=tmp_path / "cache") == payload
+    logged = db.get_fetch(edinet.SOURCE, "2026-09-20")
+    assert logged["result"] == "empty"
+
+
+def test_fetch_day_with_results_is_ok_and_logged(tmp_path):
+    db = _db(tmp_path)
+    payload = {
+        "metadata": {"status": "200", "message": ""},
+        "results": [{"docID": "S100ABCD"}, {"docID": "S100EFGH"}],
+    }
+    client, session = _client_with(_FakeResponse(json_data=payload))
+    result = edinet.fetch_day(db, "2026-09-20", "secret-key", client=client, base_dir=tmp_path / "cache")
+
+    assert result["result"] == "ok"
+    assert result["documents"] == 2
+    logged = db.get_fetch(edinet.SOURCE, "2026-09-20")
+    assert logged["result"] == "ok"
+
+
+def test_fetch_day_http_error_logs_error_and_reraises(tmp_path):
+    db = _db(tmp_path)
+    payload = {"metadata": {"status": "404", "message": "存在しない日付です"}}
+    client, session = _client_with(_FakeResponse(json_data=payload))
+    with pytest.raises(UserFacingError):
+        edinet.fetch_day(db, "2026-09-20", "secret-key", client=client, base_dir=tmp_path / "cache")
+
+    logged = db.get_fetch(edinet.SOURCE, "2026-09-20")
+    assert logged["result"].startswith("error:")
+
+
+def test_fetch_day_cancelled_does_not_log(tmp_path):
+    import threading
+
+    db = _db(tmp_path)
+    cancel = threading.Event()
+    cancel.set()
+    payload = {"metadata": {"status": "200", "message": ""}, "results": []}
+    client, session = _client_with(_FakeResponse(json_data=payload))
+    with pytest.raises(Cancelled):
+        edinet.fetch_day(db, "2026-09-20", "secret-key", cancel=cancel, client=client, base_dir=tmp_path / "cache")
+
+    assert session.calls == []
+    assert db.get_fetch(edinet.SOURCE, "2026-09-20") is None
+
+
+def test_fetch_day_error_log_does_not_leak_api_key(tmp_path):
+    db = _db(tmp_path)
+    secret = "sk-super-secret-value-98765"
+    payload = {"metadata": {"status": "404", "message": "存在しない日付です"}}
+    client, session = _client_with(_FakeResponse(json_data=payload))
+    with pytest.raises(UserFacingError):
+        edinet.fetch_day(db, "2026-09-20", secret, client=client, base_dir=tmp_path / "cache")
+
+    logged = db.get_fetch(edinet.SOURCE, "2026-09-20")
+    assert secret not in logged["result"]

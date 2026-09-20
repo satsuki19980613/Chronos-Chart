@@ -85,10 +85,10 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P4（開示の取得・突合・分類） |
-| **次にやること** | P4-2（書類一覧の取得ジョブと日次キャッシュ）。**API キーが無くてもフェイクの取得層で実装とテストはできる**が、完了条件のうち「1か月分でキャッシュを実測して SPEC §8 を更新」だけはキー入手後に回す |
+| **次にやること** | P4-3（突合・分類・キャッシュ再走査）。`disclosures` / `disclosure_links` のマイグレーション（v4）は**メインが先に `database.py` へ入れてから**サブエージェントに分担させる。**API キーが無くても合成キャッシュで実装とテストはできる**。キャッシュサイズの実測（P4-6）だけはキー入手後 |
 | **リポジトリ状態** | 作業ブランチは **`feature/p4-disclosures`**（`main` から分岐）。`main` は `origin/main` を追跡し **P3 完了時点まで push 済み**。※ P3 は `feature/p2-supply` の続きとしてコミットしてある（ブランチ名と中身がずれているが、マージ済みなので追わない）。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **外部アクセスの消費** | 2026-09-20 に採取済み: karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回、**EDINET の利用規約ページ（閲覧）と `Edinetcode.zip` を各1回**。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらへはアクセスしない**。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` |
-| **動作確認** | 2026-09-20、P2 完了時点で `.venv\Scripts\python.exe -m pytest` は **440 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
+| **動作確認** | 2026-09-20、P4-2 完了時点で `.venv\Scripts\python.exe -m pytest` は **507 passed / 15 skipped**（skip は実通信テストのみ）。P4-2 は外部アクセス無しで、ジョブ登録（`start_job('disclosures')` がキー未設定で `UserFacingError` を返し、キャッシュフォルダを作らないこと）と `CHRONOS_DATA_DIR` 配下に `edinet_cache/` が解決されることを一時フォルダで確認。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
 
 ### フェーズの状態
 
@@ -160,10 +160,11 @@
 | ID | 状態 | タスク | 完了条件 | 依存 | 対象 |
 |---|---|---|---|---|---|
 | P4-1 | `DONE` | EDINET クライアントとコードリスト | SPEC §2.4.1・§2.4.5。キーはクエリパラメータ、1秒間隔、429バックオフ。**EDINET コードリストの取り込み**（`edinet_codes`、文字コード・列構成を確認して SPEC §9-6 を解消）。**利用規約の原文を再確認し SPEC §9-5 を解消** | P1-5 P1-4 | `sources/edinet.py` `database.py` |
-| P4-2 | `TODO` | 書類一覧の取得ジョブと日次キャッシュ | SPEC §2.4.2・§2.4.4。`data/edinet_cache/` への保存、取得範囲（株価の最古日〜）、**確定済みの判定**（当日・エラーは再取得、翌日00:30以降で確定）、`disclosures` ジョブとして進捗・中断・再開。1か月分でキャッシュを実測し SPEC §8・§9-8 を更新 | P4-1 P1-6 | `sources/edinet.py` `disclosures.py` |
+| P4-2 | `DONE` | 書類一覧の取得ジョブと日次キャッシュ | SPEC §2.4.2・§2.4.4。`data/edinet_cache/` への保存、取得範囲（株価の最古日〜）、**確定済みの判定**（当日・エラーは再取得、翌日00:30以降で確定）、`disclosures` ジョブとして進捗・中断・再開。※キャッシュサイズの実測は API キー入手後（P4-6 に分離） | P4-1 P1-6 | `sources/edinet.py` `disclosures.py` |
 | P4-3 | `TODO` | 突合・分類・キャッシュ再走査 | SPEC §2.4.3・§2.4.6。書類種別ごとの突合規則、`disclosures` / `disclosure_links`、取下げ、**銘柄登録時の再走査**、銘柄削除時の孤立書類の掃除。`test_edinet.py`（後から登録した銘柄・提出者としての大量保有が登録されないこと を含む） | P4-2 | `disclosures.py` `service.py` `database.py` |
 | P4-4 | `TODO` | 開示取得UI | 取得ボタン（ジョブ）、分類別の件数、「直近90日を取り直す」、**EDINET 閲覧ページを開く**（URL 形式を確認して SPEC §9-7 を解消。不可なら PDF 一時取得方式に変更して SPEC 更新）、設定タブの EDINET 接続テスト | P4-3 P1-8 | `api.py` `app.js` |
 | P4-5 | `TODO` | 自動更新への組み込み（開示） | SPEC §2.8.2 の順3。キー未設定は黙ってスキップ、未取得が30日を超える場合は直近30日分だけ。`test_autoupdate.py` に追加 | P4-3 P1-7 | `autoupdate.py` |
+| P4-6 | `BLOCKED` | キャッシュサイズの実測 | SPEC §9-8。1か月分を実際に取得して `data/edinet_cache/` のサイズを測り、SPEC §8 の「1年あたり数十MB」を実測値に置き換える。**EDINET の Subscription-Key を入手するまで着手できない**（§5 の #8） | P4-2 | `docs/SPEC.md` |
 
 ### P5 — イベントマーカーとイベント欄
 
@@ -280,7 +281,7 @@
 - データが無い銘柄では `app.js` の `updateSupplyChipAvailability()` がチップを無効化し、
   `chart.js` 側でも `panes` から外す（チップ ON のまま銘柄を切り替えても空のペインを作らない）
 
-### EDINET（P4-1 で実装済み。P4-2 以降はこれを呼ぶ）
+### EDINET（P4-1・P4-2 で実装済み。P4-3 以降はこれを呼ぶ）
 
 `app/sources/edinet.py`:
 
@@ -291,6 +292,29 @@
 - `fetch_code_list` / `parse_code_list` / `save_code_list`（全置換）/ `fetch_and_save_code_list`
 - `edinet_code_for(db, symbol)` — **4桁コード + `"0"`** で `edinet_codes` を引く
 - `fetch_log` を書くのは `fetch_and_save_*` 側。`save_*` は DB だけ触る（`taisyaku` と同じ）
+
+日次キャッシュ（P4-2）も `app/sources/edinet.py`:
+
+- `cache_dir(base_dir=None)` / `cache_path(date, base_dir=None)` — `base_dir` 省略時は `config.EDINET_CACHE_DIR`。
+  `cache_path` は日付を `YYYY-MM-DD` ちょうどの書式に限定する（`'../evil'` も `'2026-9-1'` も `UserFacingError`）
+- `write_cache(date, data, base_dir=None) -> int` — gzip（`mtime=0`）+ 一時ファイル → `os.replace`
+- `read_cache(date, base_dir=None) -> dict | None` — 無い・壊れているときは `None`（例外にしない）
+- `cached_dates(base_dir=None) -> list[str]` — 昇順
+- `fetch_day(db, date, api_key, cancel=None, client=None, base_dir=None)` —
+  取得 → **キャッシュを書いてから** `fetch_log` に記録。0件の日も `empty` として書く
+
+`app/disclosures.py`（P4-2。突合・分類は P4-3 でここに足す）:
+
+- `today_jst()` / `is_finalized(db, date)` / `fetch_range(db, today=None)` /
+  `pending_dates(db, *, today=None, max_days=None, redo_days=0, now=None)` / `estimate(db, settings, ...)`
+- `disclosures_job(db, settings, base_dir=None)` — `jobs.register("disclosures", ...)` に渡す。
+  **main.py と dev_server.py で登録済み**。戻り値は
+  `{"days", "with_documents", "empty", "errors", "aborted", "summary"}`。
+  `with_documents` が「書類が1件以上あった日付」で、**P4-3 の突合はここを走査すればよい**
+- `pending_dates` は**降順**（新しい日付から）。`fetch_log` は1回のクエリでまとめて読む
+  （最大10年ぶんを1日ずつ `db.get_fetch` すると接続の開閉が数千回になる）
+- 確定済み判定のしきい値は JST で作ってからローカル素朴時刻に変換して `fetched_at` と比べる
+  （`fetched_at` は `datetime.now()` 由来）
 
 ### `dashboard()` の需給 payload（P3-1 で確定。P3-2〜P3-4 はこれ前提）
 
@@ -329,6 +353,7 @@
 | 4 | `CLOSED` | EDINET 利用規約の正確な文言 | P4-1 で原文を確認。SPEC §2.4.7 に記載。**加工した旨と主体の記載が必要**、**サイトのスクレイピングは禁止で API を使う**（コードリストは API で取れないので但し書きに該当） | 解消（2026-09-20） |
 | 5 | `CLOSED` | EDINET コードリスト CSV の文字コード・列構成 | P4-1 で実ファイルを確認。SPEC §2.4.1a に記載（`cp932`・1行目はダウンロード情報でヘッダは2行目・13列） | 解消（2026-09-20） |
 | 6 | `OPEN` | EDINET 書類閲覧ページの URL 形式 | P4-4 で確認。不可なら PDF 一時取得方式 | P4-4 |
+| 8 | `OPEN` | `edinet_cache` の実サイズ（SPEC §8・§9-8） | ユーザーが EDINET の Subscription-Key を取得したら、1か月分を取得して実測する。**キーが無い状態でも P4-2〜P4-5 の実装とテストは進められる**（取得層をフェイクにできるため） | P4-6 |
 | 7 | `OPEN` | karauri.net の銘柄別ページが本当に100件で打ち切られているか（ページャは無かったが、上限値そのものは公表されていない） | 上限を前提にした保存方法（SPEC §2.2.2a）は、上限が無かった場合でも正しく動く。再取得はしない。将来 101 件以上のページを観測したら本行を閉じる | なし（設計で吸収済み） |
 
 ---
@@ -356,6 +381,9 @@
 | 2026-09-20 | 各ソースの保存関数は `app/database.py` ではなく `app/sources/<ソース>.py` に置く | サブエージェントを並行させるときに `database.py` が衝突点になるため。移行（DDL）だけをメインが `database.py` に入れる | 実装時の判断（P2） |
 | 2026-09-20 | 貸借取引残高の欠測は連続区間ごとに別シリーズで切る | 透明色で1点だけ消す案は `lastValueVisible` と凡例の値が1シリーズに紐づき、複数区間の現在値の扱いが複雑になる | 実装時の判断（P3-3） |
 | 2026-09-20 | 凡例だけは空売り残高を据え置いて表示する（シリーズのデータは据え置かない） | 階段線は画面上ずっと値を保持しているのに、報告のない日の凡例が「—」になると画面と矛盾する | 実装時の判断（P3-2） |
+| 2026-09-20 | EDINET の書類一覧は**新しい日付から**取得する | 初回は数分かかり中断され得る。直近が先に揃えばチャートの右端から埋まる。自動更新の「直近30日分」も同じ規則で表せる | 実装時の判断（P4-2） |
+| 2026-09-20 | 日次キャッシュは0件の日も書き、書き込みは一時ファイル→`os.replace` で原子的に行う | 0件の日を書かないと再走査で「未取得」と区別できない。原子的でないと、落ちたときに壊れたファイルが「取得済み」として残る | 実装時の判断（P4-2） |
+| 2026-09-20 | 確定済み判定のしきい値（翌日00:30 JST）は、`fetch_log.fetched_at` と同じローカル素朴時刻に変換して比較する | `fetched_at` は `datetime.now()` 由来のローカル時刻。PC が JST でなくても仕様どおり日本時間で判断できる | 実装時の判断（P4-2） |
 
 ---
 

@@ -17,6 +17,7 @@ from app.api import Api
 from app.autoupdate import AutoUpdater
 from app.config import CSV_DIR, DATA_DIR, DB_PATH, LOG_DIR, WEB_DIR
 from app.database import Database
+from app.disclosures import disclosures_job
 from app.fetcher import YahooFetcher
 from app.jobs import JobManager, selftest_job
 from app.service import StockService
@@ -55,6 +56,7 @@ def main() -> None:
     # 起動時の自動更新。画面の初期化が終わったら JS 側が開始する（SPEC §2.8.2）
     jobs.register("auto_update", AutoUpdater(db, service, settings).run)
     jobs.register("short_all", short_all_job(db, settings))
+    jobs.register("disclosures", disclosures_job(db, settings))
     if args.debug:
         jobs.register("selftest", selftest_job)
     api = Api(service, jobs, settings)

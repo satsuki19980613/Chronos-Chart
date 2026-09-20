@@ -11,11 +11,18 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import io
+import json
 import logging
+import os
+import tempfile
 import threading
 import zipfile
+from datetime import datetime
+from pathlib import Path
 
+from .. import config
 from ..database import Database
 from ..errors import Cancelled, UserFacingError
 from ..fetcher import code_from_symbol
@@ -176,3 +183,104 @@ def fetch_and_save_code_list(
         raise
     db.log_fetch("edinet_codes", "list", "ok")
     return result
+
+
+# ---------- 日次キャッシュ（SPEC §2.4.2） ----------
+
+
+def cache_dir(base_dir: Path | None = None) -> Path:
+    """キャッシュの置き場所。`base_dir` を渡さなければ `config.EDINET_CACHE_DIR`。"""
+    return Path(base_dir) if base_dir is not None else config.EDINET_CACHE_DIR
+
+
+def cache_path(date: str, base_dir: Path | None = None) -> Path:
+    """`<キャッシュ置き場>/YYYY-MM-DD.json.gz` を返す（フォルダは作らない）。
+
+    日付はファイル名になるので、`YYYY-MM-DD` ちょうどの書式だけを通す。`'../evil'` のような値で
+    フォルダの外に書けてしまうのを防ぐのに加え、`'2026-9-1'` のようなゼロ詰めなしの表記を弾く
+    （通してしまうと同じ日のキャッシュが2つのファイル名で作られ、`fetch_log` のキーともずれる）。
+    """
+    try:
+        parsed = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise UserFacingError(f"日付の形式が不正です: {date!r}") from None
+    if parsed.strftime("%Y-%m-%d") != date:
+        raise UserFacingError(f"日付の形式が不正です: {date!r}")
+    return cache_dir(base_dir) / f"{date}.json.gz"
+
+
+def write_cache(date: str, data: dict, base_dir: Path | None = None) -> int:
+    """`documents.json` のレスポンスをそのまま gzip+JSON で保存し、書いたバイト数を返す。"""
+    path = cache_path(date, base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = gzip.compress(json.dumps(data, ensure_ascii=False).encode("utf-8"), mtime=0)
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
+    return len(payload)
+
+
+def read_cache(date: str, base_dir: Path | None = None) -> dict | None:
+    """キャッシュを読む。無い・壊れているときは None（例外にしない）。"""
+    path = cache_path(date, base_dir)
+    if not path.exists():
+        return None
+    try:
+        with gzip.open(path, "rb") as f:
+            raw = f.read()
+        return json.loads(raw.decode("utf-8"))
+    # 途中で切れた gzip は EOFError、gzip でなければ BadGzipFile（OSError の一種）。
+    # どれも「壊れている＝無いものとして扱う」（SPEC §2.4.2）。
+    except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        log.warning("EDINET キャッシュを読み取れませんでした（%s）: %s", path, exc)
+        return None
+
+
+def cached_dates(base_dir: Path | None = None) -> list[str]:
+    """キャッシュがある日付を昇順で返す。"""
+    directory = cache_dir(base_dir)
+    if not directory.is_dir():
+        return []
+    dates = []
+    for entry in directory.glob("*.json.gz"):
+        name = entry.name[: -len(".json.gz")]
+        try:
+            datetime.strptime(name, "%Y-%m-%d")
+        except ValueError:
+            continue
+        dates.append(name)
+    return sorted(dates)
+
+
+def fetch_day(
+    db: Database,
+    date: str,
+    api_key: str,
+    cancel: threading.Event | None = None,
+    client: HttpClient | None = None,
+    base_dir: Path | None = None,
+) -> dict:
+    """1日ぶんの書類一覧を取得し、キャッシュへ保存して `fetch_log` に記録する。"""
+    if client is None:
+        client = make_client()
+    try:
+        data = fetch_documents(client, date, api_key, cancel=cancel)
+        count = len(data.get("results") or [])
+        result = "ok" if count > 0 else "empty"
+        written = write_cache(date, data, base_dir=base_dir)
+    except Cancelled:
+        raise
+    except Exception as exc:
+        db.log_fetch(SOURCE, date, f"error:{exc}")
+        raise
+    db.log_fetch(SOURCE, date, result)
+    return {"date": date, "result": result, "documents": count, "bytes": written}
