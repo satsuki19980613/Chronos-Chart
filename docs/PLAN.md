@@ -85,7 +85,7 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P2（需給データの取得） |
-| **次にやること** | P2-2・P2-5（karauri のパーサ・保存・合計算出）と P2-4（日証金のパーサ・保存）を Sonnet のサブエージェント2本で並行。合成フィクスチャ（P2-1・P2-3 の残作業）も各担当が作る。終わったら P2-6（取得UI）→ P2-7（自動更新への組み込み） |
+| **次にやること** | P2-6（取得UI: 空売りの一括取得ジョブ・単一銘柄・日証金の手動取得）。その後 P2-7（自動更新への組み込み）で P2 完了 |
 | **リポジトリ状態** | 作業ブランチは **`feature/p2-supply`**（`main` から分岐）。`main` は `origin/main` を追跡し P1 完了時点まで push 済み。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **外部アクセスの消費** | 2026-09-20 に P2-1・P2-3 の採取を実施済み（karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回）。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらのサイトへはアクセスしない**。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` |
 | **動作確認** | 2026-09-20、P1 完了時点で `.venv\Scripts\python.exe -m pytest` は **337 passed / 15 skipped**（skip は実通信テストのみ）。開発サーバー（ブラウザ）でジョブの進捗・中断、起動時の自動更新（実際に yfinance から2銘柄を更新）、設定タブの保存・検証・キーの表示と削除を確認済み。pywebview のウィンドウ（`start.bat`）での起動確認をユーザーに依頼し、「全て問題ない」との回答（2026-09-20） |
@@ -138,11 +138,11 @@
 
 | ID | 状態 | タスク | 完了条件 | 依存 | 対象 |
 |---|---|---|---|---|---|
-| P2-1 | `WIP` | karauri.net の合成フィクスチャ作成 | 実ページを**1回だけ**取得して `tests/fixtures/real/`（Git 対象外）に置き、構造を写した**合成 HTML** を `tests/fixtures/karauri_synthetic.html` として作る（SPEC §10.1 の行パターンを含む）。実物の採取は現役の報告者が多い銘柄で行う（7203 は約40行・最新 2022-04 で通常行が無い） | P1-5 | `tests/fixtures/` |
-| P2-2 | `TODO` | 空売り残高の取得とパース | SPEC §2.2.1〜2.2.2・§2.2.4。`holder_id` 抽出、銘柄単位の全置換、列数違いでエラー、403/429 で即中止。`test_karauri.py` | P2-1 | `sources/karauri.py` `database.py` |
-| P2-3 | `WIP` | **日証金の列定義の確定** | `zandaka.csv` `meigara.csv` を各1回取得して `tests/fixtures/real/` に置き、`cp932` で読んで全列名・速報/確報の区分値・区分列の意味を **SPEC §2.3.1 と §3 に追記**（§9-1 を解消）。合成 CSV を作る。※固定名・最新日のみ・約36列であることはレビューで確認済み | P0-6 | `docs/SPEC.md` `tests/fixtures/` |
-| P2-4 | `TODO` | 貸借取引残高の取得とパース | SPEC §2.3。ヘッダ名で列を引く、登録銘柄の行だけ保存、確報が速報を上書き（逆はしない）、貸借銘柄でない場合はエラーにしない。`test_taisyaku.py` | P2-3 P1-5 | `sources/taisyaku.py` `database.py` |
-| P2-5 | `TODO` | 空売り残高合計の算出 | SPEC §2.2.3。`holder_id` ごとの最新採用、消失の二重条件、該当者なしで 0。`test_short_totals.py` | P2-2 | `service.py` |
+| P2-1 | `DONE` | karauri.net の合成フィクスチャ作成 | 実ページを**1回だけ**取得して `tests/fixtures/real/`（Git 対象外）に置き、構造を写した**合成 HTML** を `tests/fixtures/karauri_synthetic.html` として作る（SPEC §10.1 の行パターンを含む）。実物の採取は現役の報告者が多い銘柄で行う（7203 は約40行・最新 2022-04 で通常行が無い） | P1-5 | `tests/fixtures/` |
+| P2-2 | `DONE` | 空売り残高の取得とパース | SPEC §2.2.1〜2.2.2a・§2.2.4。`holder_id` 抽出、**最小計算日以降だけの置換**（全置換はしない）、列数違いでエラー、403/429 で即中止。`test_karauri.py` | P2-1 | `sources/karauri.py` |
+| P2-3 | `DONE` | **日証金の列定義の確定** | `zandaka.csv` `meigara.csv` を各1回取得して `tests/fixtures/real/` に置き、`cp932` で読んで全列名・速報/確報の区分値・区分列の意味を **SPEC §2.3.1 と §3 に追記**（§9-1 を解消）。合成 CSV を作る。※固定名・最新日のみ・約36列であることはレビューで確認済み | P0-6 | `docs/SPEC.md` `tests/fixtures/` |
+| P2-4 | `DONE` | 貸借取引残高の取得とパース | SPEC §2.3。ヘッダ名で列を引く、**東証の行だけを採用**、登録銘柄の行だけ保存、確報が速報を上書き（逆はしない）、貸借銘柄でない場合はエラーにしない。`test_taisyaku.py` | P2-3 P1-5 | `sources/taisyaku.py` |
+| P2-5 | `DONE` | 空売り残高合計の算出 | SPEC §2.2.3。`holder_id` ごとの最新採用、消失の二重条件、該当者なしで 0。`test_short_totals.py` | P2-2 | `sources/karauri.py` |
 | P2-6 | `TODO` | 取得UI | 空売りの一括取得を `short_all` ジョブで。実行前に「対象銘柄数 × 間隔」を提示して確認、進捗と中断。`scrape_contact` 未設定なら実行不可。単一銘柄の取得、日証金の手動取得 | P2-2 P2-4 P1-6 | `api.py` `app.js` |
 | P2-7 | `TODO` | 自動更新への組み込み（需給） | SPEC §2.8.2 の順2・順4。日証金は既定で含める。空売りは `auto_update_short`（既定 false）のときだけ、`short_recheck_hours` を守る。`test_autoupdate.py` に追加 | P2-6 P1-7 | `autoupdate.py` |
 
@@ -204,6 +204,7 @@
 | 1 | 2026-09-20 | P0-1, P0-2, P0-3 | 土台クローン・リモート設定。サブエージェント4本でリサーチ。RESEARCH/DESIGN/SPEC/PLAN/REVIEW_REQUEST 作成。方針3点をユーザー確定（日証金＋karauri併用 / AIへ需給を送らない / EDINETのみ）。ブランチ `docs/initial-design` にコミット |
 | 2 | 2026-09-20 | P0-4 | fable による設計レビュー（重大4・中12・軽微5・提案3）。一次情報と同梱ライブラリで事実確認し、土台のテスト 252 passed を確認。ユーザーが推奨案をすべて承認し、**起動時の自動更新**を追加要望。SPEC/PLAN を 1.1 に更新、RESEARCH/DESIGN に訂正表を追加。タスクは 38 → 43。別 PC への移行手順を SPEC §2.1.4 に追加。ユーザーが全体を承認し、コミットして `main` にマージ、`origin` に push（P0-5）。push 時に GitHub のメール保護で拒否されたため、未 push の4コミットの作者メールを noreply アドレスに書き換えた（内容は不変） |
 | 3 | 2026-09-20 | P0-5, P0-6, P1-1〜P1-8 | push（GitHub のメール保護で拒否されたため未 push の4コミットの作者メールを noreply に書き換え）。NOTICE・CLAUDE.md・`.gitignore`。P1（基盤）を完了: 改名、依存追加、マイグレーション（DDL を含めてロールバックできるよう明示トランザクション化）、設定（keyring）、共通HTTPクライアント、ジョブ基盤、起動時の自動更新（株価）、設定タブ。開発は `.venv` で行う。337 passed。レビューの NOTICE 著作権年の指摘は誤りと判明し撤回。`main` にマージして push 済み |
+| 5 | 2026-09-20 | P2-1〜P2-5 | 実物を各1回採取（karauri `/6920/`・日証金 `zandaka.csv` `meigara.csv`）。**karauri の銘柄別ページは直近100件まで**と判明し、保存を全置換から「最小計算日以降だけの置換」に変更。**日証金 CSV は同一コードが市場ごとに複数行**あると判明し、東証の行だけを採用する規則を追加。`zandaka.csv` の全36列を SPEC に記載して §9-1 を解消。パーサ・保存・合計算出を Sonnet のサブエージェント2本（karauri / 日証金）で並行実装し、メインが差分をレビューして設定キー・日付書式の検証・浮動小数の丸めを修正。実物に対する構造テスト（`test_real_fixtures.py`）を追加。391 passed / 15 skipped |
 | 4 | 2026-09-20 | （引き継ぎ） | ユーザーが P1 までの成果を承認。次のセッションから **メインは指揮、実装・テストは Sonnet のサブエージェントを複数起動して行う**方針を指示（§0 に手順を追加）。P2 の実サイトへの各1回のアクセスも了承済み。次は P2-1・P2-3 |
 
 ---
@@ -257,13 +258,15 @@
 - 需給の3テーブル（`short_positions` `short_totals` `margin_balances`）はマイグレーション **v2**（`app/database.py` の `_migrate_v2`）で作成済み。
   各ソースの保存関数は `app/database.py` ではなく `app/sources/<ソース>.py` に置き、`Database` を引数で受ける（同じファイルを複数の担当が触らないため）
 
-### P2-1・P2-3 の残作業（WIP）
-
-実物の採取と SPEC への反映は済んでいる。残っているのは合成フィクスチャだけで、
-それぞれ P2-2・P2-4 の担当がパーサと同じコミットで作る。
-
-- `tests/fixtures/karauri_synthetic.html`（SPEC §10.1 の行パターン。実物は `tests/fixtures/real/karauri_6920.html`）
-- `tests/fixtures/taisyaku_zandaka_*.csv`（`cp932`・CRLF・36列。速報と確報。実物は `tests/fixtures/real/zandaka.csv`）
+- 需給ソースの公開関数（P2-6・P2-7 から呼ぶ）:
+  - `app/sources/karauri.py`: `make_client(settings)` / `fetch_html(client, code, cancel=None)` / `parse(html)` /
+    `compute_totals(rows)` / `save(db, symbol, rows) -> {"rows", "dates", "since"}`
+  - `app/sources/taisyaku.py`: `make_client(settings=None)` / `fetch_zandaka(client, cancel=None)` / `parse(content: bytes)` /
+    `save(db, rows, symbols, fetched_at=None) -> {"saved", "skipped", "date", "missing"}`
+- `.gitattributes` は既定で `* text=auto eol=lf`。**改行をそのまま保ちたいフィクスチャは `-text` を明示する**
+  （日証金の合成 CSV は cp932・CRLF。放っておくと LF に正規化されて実物と構造が変わる。`test_taisyaku.py` が検知する）
+- `tests/test_real_fixtures.py` は `tests/fixtures/real/` に実物があるときだけ走る（無ければ skip）。
+  値は見ずに構造だけを検証し、合成フィクスチャが実物からずれていないかの保険にする
 
 ### 外部アクセスの作法
 

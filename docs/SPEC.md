@@ -155,6 +155,8 @@ RESEARCH.md / DESIGN.md はレビュー前の記述を含む。**食い違う場
 
 実ページで確認した構造（2026-09-20 に 6920 を1回だけ取得。実物は `tests/fixtures/real/`・Git 対象外）:
 
+- ページは **XHTML 1.0 Strict を `text/html`（`charset=UTF-8`）で返す**。先頭に XML 宣言がある。
+  ブラウザと同じく HTML として読む（`BeautifulSoup(html, "lxml")`）。bs4 の `XMLParsedAsHTMLWarning` は抑止してよい
 - 対象テーブル: `<table id="sort" class="mtb2">`（同じページにもう1枚 `<table class="mtb1">` の企業情報表があるので必ず `id` で引く）
 - 1行目はヘッダ（`<th>`）。列順は `計算日 / 空売り者 / 残高割合 / 増減率 / 残高数量 / 増減量 / 備考` の7列
 - データ行: `<tr class="obb">` と `<tr class="occ">`（ゼブラ用の交互クラス。両方をデータ行として扱う）
@@ -209,7 +211,7 @@ RESEARCH.md / DESIGN.md はレビュー前の記述を含む。**食い違う場
    判定は「`note` に `消失` を含む **または** `ratio < 0.5`」の二重条件（文字列一致だけに依存しない）
 4. `total_ratio` = 選ばれたレコードの `ratio` の合計、`holders` = 件数、`total_qty` = `quantity` の合計。
    該当者がいなければ `0 / 0 / 0`
-5. 結果を `short_totals` に全置換で保存する
+5. 結果を `short_totals` に全置換で保存する（実装は `app/sources/karauri.py`。保存と不可分なため `service.py` には置かない）
 
 > 合計値はサイトが公表している値ではなく**本ツールが算出した値**である。画面にその旨を注記する（§1.4）。
 > 手順1〜4 は**収集済みの行だけ**が入力になる。ページの表示上限（§2.2.2a）より前に最後の報告をした報告者は
@@ -887,7 +889,7 @@ main.py                  起動（変更: 新サービスの組み立て）
 dev_server.py            開発用サーバー（変更: 新サービスの組み立てのみ。API はリフレクションで公開されるので追加作業なし）
 app/
 ├── api.py               JS 公開 API（拡張）
-├── service.py           株価・指標（既存。fetch_log の記録を追加）
+├── service.py           株価・指標（既存。fetch_log の記録を追加）。需給の保存は sources/ 側に置く
 ├── fetcher.py           yfinance（既存）
 ├── indicators.py        指標計算（既存・変更なし）
 ├── database.py          SQLite（拡張）
@@ -901,8 +903,8 @@ app/
 ├── sources/             [新]
 │   ├── __init__.py
 │   ├── base.py            間隔制御つきHTTPクライアント
-│   ├── karauri.py         空売り残高
-│   ├── taisyaku.py        貸借取引残高
+│   ├── karauri.py         空売り残高（取得・パース・保存・合計算出 §2.2）
+│   ├── taisyaku.py        貸借取引残高（取得・パース・保存 §2.3）
 │   └── edinet.py          EDINET API v2・コードリスト・日次キャッシュ
 ├── disclosures.py       [新] 突合・分類・キャッシュ再走査
 ├── events.py            [新] disclosures → チャートイベント変換（足のある日付への寄せ）
@@ -1055,13 +1057,15 @@ data/                    .gitignore 済み
   値・機関名・銘柄は架空のものにする
   - karauri: `<table id="sort" class="mtb2">` の骨格。備考なしの通常行、報告義務消失、再IN、名称が違い `holder_id` が同じ行、重複行、
     `1,234,567株` のような単位つき数量、増減率 `0%` と空の増減量、リンクの無い空売り者の行を含める。
-    ページ内にもう1枚 `<table class="mtb1">` を置く（`id` で引けているかの確認用）
+    ページ内にもう1枚 `<table class="mtb1">` を置く（`id` で引けているかの確認用）。
+    前書きは実物どおり XML 宣言＋XHTML 1.0 Strict の DOCTYPE にする（パーサが同じ経路を通るように）
   - 日証金: `cp932`・CRLF・ダブルクォート囲み・実物と同じ36列のヘッダ・架空銘柄の数行。
     速報と確報の両方、**同一コードで `東証およびＰＴＳ` と `名証` の2行**、東証の行が無いコード、負の差引残高、未知の区分値を含める
   - EDINET: `documents.json` と同じキー構成の合成 JSON（提出者一致／大量保有の issuer 一致／公開買付の subject 一致／
     登録銘柄が**提出者**の大量保有（＝登録されないこと）／取下げ／`secCode` NULL）
 - 構造確認のために採取した実物は `tests/fixtures/real/` に置き、**`.gitignore` に追加**する。
-  実物が存在するときだけ走る追加テストを用意する（無ければ skip）
+  実物が存在するときだけ走る追加テストを `tests/test_real_fixtures.py` に置く（無ければ skip）。
+  **値そのものは検証しない**（サイト側でいつでも変わるし取り直しもしない）。構造だけを見て、合成フィクスチャが実物からずれていないかの保険にする
 
 ### 10.2 テスト一覧
 

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<!-- 実ページは XHTML 1.0 Strict を text/html で返す（先頭に XML 宣言がある）。
+     パーサが同じ経路を通るよう、合成フィクスチャでも前書きを合わせている。 -->
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ja" lang="ja">
+<head><meta charset="UTF-8"/><title>架空株式会社 空売り情報 - 合成フィクスチャ</title></head>
+<body>
+<!-- 実サイトと同じく、企業情報の表 (mtb1) が sort テーブルより前にある。
+     id ではなく class や見た目で拾うと誤ってこちらを読んでしまうため、
+     パーサが id="sort" で正しく引けているかを確認するためのダミー。 -->
+<table class="mtb1">
+<tr><th>銘柄コード</th><td>1234</td></tr>
+<tr><th>銘柄名</th><td>架空株式会社</td></tr>
+<tr><th>市場</th><td>東証プライム</td></tr>
+</table>
+
+<table id="sort" class="mtb2">
+<tr><th>計算日</th><th>空売り者</th><th>残高割合</th><th>増減率</th><th>残高数量</th><th>増減量</th><th>備考</th></tr>
+
+<!-- 通常行: 増加（co_red） -->
+<tr class="obb"><td class="ct"><a href="/1234/?date=2026-09-16" title="架空株式会社の空売り情報（2026-09-16～）">2026/09/16</a></td><td class="lf"><a href="/1234/?f=901" title="アルファ・キャピタルの空売り情報">アルファ・キャピタル</a></td><td class="ct">2.040%</td><td class="ct co_red">+0.060%</td><td class="ct">1,931,142株</td><td class="ct co_red">+60,277</td><td class="lf"></td></tr>
+
+<!-- 通常行: 減少（co_br） -->
+<tr class="occ"><td class="ct"><a href="/1234/?date=2026-09-15" title="架空株式会社の空売り情報（2026-09-15～）">2026/09/15</a></td><td class="lf"><a href="/1234/?f=902" title="ベータ・アセットの空売り情報">ベータ・アセット</a></td><td class="ct">1.200%</td><td class="ct co_br">-0.030%</td><td class="ct">800,000株</td><td class="ct co_br">-15,213</td><td class="lf"></td></tr>
+
+<!-- 報告義務消失（ratio が 0.5% 未満） -->
+<tr class="obb"><td class="ct"><a href="/1234/?date=2026-09-14" title="架空株式会社の空売り情報（2026-09-14～）">2026/09/14</a></td><td class="lf"><a href="/1234/?f=905" title="イプシロン・ファンドの空売り情報">イプシロン・ファンド</a></td><td class="ct">0.450%</td><td class="ct co_br">-0.050%</td><td class="ct">300,000株</td><td class="ct co_br">-20,000</td><td class="lf">報告義務消失</td></tr>
+
+<!-- 再IN -->
+<tr class="occ"><td class="ct"><a href="/1234/?date=2026-09-10" title="架空株式会社の空売り情報（2026-09-10～）">2026/09/10</a></td><td class="lf"><a href="/1234/?f=906" title="ゼータ・キャピタルの空売り情報">ゼータ・キャピタル</a></td><td class="ct">0.800%</td><td class="ct co_red">+0.010%</td><td class="ct">500,000株</td><td class="ct co_red">+5,000</td><td class="lf">再IN（前回2026-01-15）</td></tr>
+
+<!-- 増減率 0%、増減量が空文字の行（td にクラスが付かない） -->
+<tr class="obb"><td class="ct"><a href="/1234/?date=2026-09-09" title="架空株式会社の空売り情報（2026-09-09～）">2026/09/09</a></td><td class="lf"><a href="/1234/?f=907" title="イータ・トレーディングの空売り情報">イータ・トレーディング</a></td><td class="ct">0.900%</td><td class="ct">0%</td><td class="ct">400,000株</td><td class="ct"></td><td class="lf"></td></tr>
+
+<!-- 同じ holder_id (f=901) だが表示名が違う（名称ゆれ） -->
+<tr class="occ"><td class="ct"><a href="/1234/?date=2026-09-08" title="アルファキャピタル証券の空売り情報（2026-09-08～）">2026/09/08</a></td><td class="lf"><a href="/1234/?f=901" title="アルファキャピタル証券の空売り情報">アルファキャピタル証券</a></td><td class="ct">2.100%</td><td class="ct co_red">+0.010%</td><td class="ct">1,950,000株</td><td class="ct co_red">+18,858</td><td class="lf"></td></tr>
+
+<!-- <a> リンクが無い空売り者（名称を holder_id の代用にする） -->
+<tr class="obb"><td class="ct"><a href="/1234/?date=2026-09-07" title="架空株式会社の空売り情報（2026-09-07～）">2026/09/07</a></td><td class="lf">ガンマ・パートナーズ</td><td class="ct">0.700%</td><td class="ct co_br">-0.005%</td><td class="ct">350,000株</td><td class="ct co_br">-1,200</td><td class="lf"></td></tr>
+
+<!-- 同一 (計算日, holder_id) の重複行 その1（後の行を採用） -->
+<tr class="occ"><td class="ct"><a href="/1234/?date=2026-09-16" title="デルタ・マネジメントの空売り情報（2026-09-16～）">2026/09/16</a></td><td class="lf"><a href="/1234/?f=904" title="デルタ・マネジメントの空売り情報">デルタ・マネジメント</a></td><td class="ct">1.500%</td><td class="ct co_red">+0.020%</td><td class="ct">700,000株</td><td class="ct co_red">+10,000</td><td class="lf"></td></tr>
+
+<!-- 同一 (計算日, holder_id) の重複行 その2（こちらを採用すべき） -->
+<tr class="obb"><td class="ct"><a href="/1234/?date=2026-09-16" title="デルタ・マネジメントの空売り情報（2026-09-16～）">2026/09/16</a></td><td class="lf"><a href="/1234/?f=904" title="デルタ・マネジメントの空売り情報">デルタ・マネジメント</a></td><td class="ct">1.550%</td><td class="ct co_red">+0.025%</td><td class="ct">705,000株</td><td class="ct co_red">+15,000</td><td class="lf"></td></tr>
+
+<!-- 残高数量が "-" の行 -->
+<tr class="occ"><td class="ct"><a href="/1234/?date=2026-09-06" title="シータ・パートナーズの空売り情報（2026-09-06～）">2026/09/06</a></td><td class="lf"><a href="/1234/?f=908" title="シータ・パートナーズの空売り情報">シータ・パートナーズ</a></td><td class="ct">0.600%</td><td class="ct co_br">-0.001%</td><td class="ct">-</td><td class="ct co_br">-1,000</td><td class="lf"></td></tr>
+
+<!-- 残高数量が空文字の行 -->
+<tr class="obb"><td class="ct"><a href="/1234/?date=2026-09-05" title="イオタ・インベストメントの空売り情報（2026-09-05～）">2026/09/05</a></td><td class="lf"><a href="/1234/?f=909" title="イオタ・インベストメントの空売り情報">イオタ・インベストメント</a></td><td class="ct">0.650%</td><td class="ct co_red">+0.002%</td><td class="ct"></td><td class="ct co_red">+500</td><td class="lf"></td></tr>
+
+</table>
+</body>
+</html>
