@@ -1,9 +1,9 @@
 """Yahoo! Finance への実ネットワークアクセスを伴う統合テスト。
 
 通常の `pytest` 実行ではスキップされる。実行するには環境変数
-AUTOTECHNICAL_LIVE=1 を設定すること:
+CHRONOS_LIVE=1 を設定すること:
 
-    AUTOTECHNICAL_LIVE=1 python -m pytest tests/test_live_yahoo.py -v -s
+    CHRONOS_LIVE=1 python -m pytest tests/test_live_yahoo.py -v -s
 
 app/ や web/ のコードは変更しない。DB・CSV・出力先はすべてこのファイル専用の
 一時ディレクトリ（プロジェクトの data/ や output/ とは別）を使う。
@@ -25,8 +25,8 @@ from app.database import Database
 from app.fetcher import FetchError, YahooFetcher
 from app.service import StockService
 
-LIVE = os.environ.get("AUTOTECHNICAL_LIVE") == "1"
-skip_unless_live = pytest.mark.skipif(not LIVE, reason="set AUTOTECHNICAL_LIVE=1 to run live Yahoo Finance tests")
+LIVE = os.environ.get("CHRONOS_LIVE") == "1"
+skip_unless_live = pytest.mark.skipif(not LIVE, reason="set CHRONOS_LIVE=1 to run live Yahoo Finance tests")
 
 SLOW_THRESHOLD_S = 15.0
 
@@ -50,7 +50,7 @@ def fetcher():
 def service_env(tmp_path):
     """StockService backed by a throwaway temp dir (never the project's data/ or output/)."""
     root = tmp_path
-    db = Database(root / "db" / "autotechnical.db")
+    db = Database(root / "db" / "chronos.db")
     db.init_schema()
     fetcher = YahooFetcher()
     service = StockService(db, fetcher, root / "csv", root / "output")

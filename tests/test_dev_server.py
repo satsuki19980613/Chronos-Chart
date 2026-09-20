@@ -186,7 +186,7 @@ def test_path_traversal_blocked(server, path):
     assert status != 200
     # 設定ファイルの中身（BASE_DIR / DATA_DIR 等）が漏れていないことも確認する
     assert b"BASE_DIR" not in body
-    assert b"AUTOTECHNICAL_DATA_DIR" not in body
+    assert b"CHRONOS_DATA_DIR" not in body
 
 
 def test_wrong_argument_count_returns_graceful_error_not_crash(server):

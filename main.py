@@ -1,4 +1,4 @@
-"""Autotechnical の起動スクリプト。
+"""Chronos Chart の起動スクリプト。
 
     python main.py          # 通常起動
     python main.py --debug  # 開発者ツール付きで起動
@@ -34,7 +34,7 @@ def setup_logging(debug: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Autotechnical - テクニカル分析ツール")
+    parser = argparse.ArgumentParser(description="Chronos Chart - テクニカル分析ツール")
     parser.add_argument("--debug", action="store_true", help="開発者ツールを有効にする")
     args = parser.parse_args()
 
@@ -49,7 +49,7 @@ def main() -> None:
     api = Api(service)
 
     webview.create_window(
-        f"Autotechnical {__version__}",
+        f"Chronos Chart {__version__}",
         str(WEB_DIR / "index.html"),
         js_api=api,
         width=1440,

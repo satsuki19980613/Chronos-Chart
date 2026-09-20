@@ -2,7 +2,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const f = window.fmt;
-  const STORAGE_KEY = "autotechnical.chart.v2";
+  const STORAGE_KEY = "chronos.chart.v2";
 
   const state = {
     stocks: [],
