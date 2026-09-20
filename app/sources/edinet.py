@@ -16,17 +16,21 @@ import io
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import zipfile
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
+
+from bs4 import BeautifulSoup
 
 from .. import config
 from ..database import Database
 from ..errors import Cancelled, UserFacingError
 from ..fetcher import code_from_symbol
-from .base import HttpClient, user_agent
+from .base import HttpClient, ResponseTooLarge, user_agent
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +40,21 @@ CODE_LIST_URL = "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelist/
 MIN_INTERVAL = 1.0  # SPEC §2.4.5: 1リクエストあたり1秒以上空ける
 
 CODE_LIST_MEMBER = "EdinetcodeDlInfo.csv"
+
+# ---------- 書類本文の取得（P9-1。SPEC §2.4.8） ----------
+
+DOCUMENT_URL = "https://api.edinet-fsa.go.jp/api/v2/documents/{doc_id}"
+DOCUMENT_MAX_BYTES = 20 * 1024 * 1024  # 実測: 有報 1.2MB。桁違いの異常値だけ弾ければよいので余裕を持たせる
+DOCUMENT_MAX_CHARS = 200_000  # モーダルに出す分量の上限。これ以上はリンク誘導があるので切り捨てて構わない
+DOCUMENT_READ_TIMEOUT = 60.0  # 一覧取得より大きいファイルを扱うので、この用途だけ読み取りを長めにする
+
+# `docID` は URL に埋め込むので、英数字だけであることを確かめてから組み立てる。
+# `app.disclosures._DOC_ID_RE` と同じ考え方だが、import すると
+# app.disclosures → app.sources.edinet → app.disclosures の循環になるためここに複製する。
+_DOC_ID_RE = re.compile(r"^[A-Za-z0-9]+$")
+
+_DOCUMENT_CACHE_MAX = 16  # プロセス内 LRU キャッシュの件数上限（SPEC §2.4.8: data/ には書かない）
+_document_cache: "OrderedDict[str, dict]" = OrderedDict()
 
 # ヘッダ名（SPEC §2.4.1a）。1つでも欠けていたら構造変更とみなしエラーにする。
 REQUIRED_CODE_LIST_COLUMNS = ("ＥＤＩＮＥＴコード", "証券コード", "提出者名")
@@ -284,3 +303,146 @@ def fetch_day(
         raise
     db.log_fetch(SOURCE, date, result)
     return {"date": date, "result": result, "documents": count, "bytes": written}
+
+
+# ---------- 書類本文の取得・テキスト化（P9-1。SPEC §2.4.8） ----------
+
+
+class DocumentTooLarge(UserFacingError):
+    """書類 ZIP が `DOCUMENT_MAX_BYTES` を超えていたため、本体を読まずに中止した。"""
+
+    def __init__(self, size_bytes: int):
+        mb = size_bytes / (1024 * 1024)
+        super().__init__(f"書類が大きすぎます（約 {mb:.1f} MB）")
+        self.size_bytes = size_bytes
+
+
+def clear_document_cache() -> None:
+    """プロセス内キャッシュを空にする（テスト用）。"""
+    _document_cache.clear()
+
+
+def fetch_document_zip(
+    client: HttpClient, doc_id: str, api_key: str, cancel: threading.Event | None = None
+) -> bytes:
+    """書類取得 API（`documents/<docID>?type=1`）から ZIP のバイト列を取る（SPEC §2.4.8）。
+
+    `doc_id` は URL に直接埋め込むため、英数字だけであることを先に確かめる
+    （`disclosures.viewer_url` と同じ考え方。ここでは import せず正規表現を複製している）。
+    キーは自前で URL に組み込まず `params` で渡す（`HttpClient` の `mask_secrets` に任せる）。
+    `Content-Length` が `DOCUMENT_MAX_BYTES` を超える場合は本体を読まずに `DocumentTooLarge` にする。
+    """
+    api_key = (api_key or "").strip()
+    if not api_key:
+        raise UserFacingError("EDINET の API キーが設定されていません")
+    if not doc_id or not _DOC_ID_RE.match(doc_id):
+        raise UserFacingError(f"不正な書類番号です: {doc_id!r}")
+
+    url = DOCUMENT_URL.format(doc_id=doc_id)
+    params = {"type": 1, "Subscription-Key": api_key}
+    try:
+        response = client.get(
+            url,
+            params=params,
+            cancel=cancel,
+            read_timeout=DOCUMENT_READ_TIMEOUT,
+            max_bytes=DOCUMENT_MAX_BYTES,
+        )
+    except ResponseTooLarge as exc:
+        raise DocumentTooLarge(exc.size_bytes) from None
+    return response.content
+
+
+# 空行の連続（改行だけの行が2つ以上）を1つに潰す
+_BLANK_LINES_RE = re.compile(r"\n\s*\n+")
+
+
+def _text_from_html(content: bytes) -> str:
+    """1つの inline XBRL の HTML から本文テキストを取り出す。
+
+    `script` / `style` はテキスト化前に取り除く。表は行ごとに改行、セルは全角スペースで区切る
+    （体裁は問わない。読めれば十分という方針。SPEC §2.4.8）。
+    """
+    soup = BeautifulSoup(content, "lxml")
+    # head ごと落とす。get_text() は <title> の中身も拾うので、残すと本文の先頭に
+    # ファイル名（例: 0000000_header_0339814703806.htm）が混ざる（実データで確認）
+    for tag in soup(["script", "style", "head"]):
+        tag.decompose()
+    text = soup.get_text("\n", strip=True)
+    return _BLANK_LINES_RE.sub("\n\n", text).strip()
+
+
+def _title_from_html(content: bytes) -> str | None:
+    soup = BeautifulSoup(content, "lxml")
+    if soup.title:
+        title_text = soup.title.get_text(strip=True)
+        if title_text:
+            return title_text
+    # <title> が無ければ、最初の見出しらしい行（h1〜h3）を拾う
+    heading = soup.find(["h1", "h2", "h3"])
+    if heading:
+        text = heading.get_text(strip=True)
+        return text or None
+    return None
+
+
+def extract_document_text(content: bytes) -> dict:
+    """書類 ZIP のバイト列から本文テキストを取り出す（SPEC §2.4.8）。
+
+    `XBRL/PublicDoc/` 配下の `.htm`/`.html` だけを**ファイル名の昇順**で連結する
+    （表紙 `0000000_header_…` → 本文 `0101010_honbun_…` の順に並ぶ実測に基づく）。
+    ZIP として開けない・対象ファイルが1つも無い場合は、例外にせず空のテキストを返す
+    （呼び出し側がこれを「テキストにできない」と判断してリンク誘導する。SPEC §2.4.8）。
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            htm_names = [n for n in zf.namelist() if n.lower().endswith((".htm", ".html"))]
+            # 本文の置き場所は書類によって `XBRL/PublicDoc/…` と `PublicDoc/…` の2通りがある
+            # （実測: 有報・臨報・大量保有は前者、確認書は後者）。どちらも拾えるよう
+            # パスに `PublicDoc/` を含むかで判定する。1つも無ければ、監査報告書などしか
+            # 入っていない ZIP でもテキストを出せるよう .htm 全部にフォールバックする
+            names = sorted(n for n in htm_names if "PublicDoc/" in n) or sorted(htm_names)
+            if not names:
+                return {"title": None, "text": "", "truncated": False}
+
+            title: str | None = None
+            parts: list[str] = []
+            for name in names:
+                raw = zf.read(name)
+                if title is None:
+                    title = _title_from_html(raw)
+                text = _text_from_html(raw)
+                if text:
+                    parts.append(text)
+    except zipfile.BadZipFile:
+        return {"title": None, "text": "", "truncated": False}
+
+    full_text = "\n\n".join(parts)
+    truncated = len(full_text) > DOCUMENT_MAX_CHARS
+    if truncated:
+        full_text = full_text[:DOCUMENT_MAX_CHARS]
+    return {"title": title, "text": full_text, "truncated": truncated}
+
+
+def fetch_document_text(
+    client: HttpClient, doc_id: str, api_key: str, cancel: threading.Event | None = None
+) -> dict:
+    """書類本文を取得してテキストにする（SPEC §2.4.8）。ディスクには一切書かない。
+
+    プロセス内 LRU キャッシュ（最大 `_DOCUMENT_CACHE_MAX` 件）を使うので、同じ `doc_id` を
+    何度表示しても HTTP は1回しか呼ばない。表示のたびに叩く操作であって取得履歴ではないため、
+    `fetch_log` には書かない。
+    """
+    cached = _document_cache.get(doc_id)
+    if cached is not None:
+        _document_cache.move_to_end(doc_id)  # LRU: 直近アクセスを最後尾に
+        return cached
+
+    content = fetch_document_zip(client, doc_id, api_key, cancel=cancel)
+    result = extract_document_text(content)
+
+    _document_cache[doc_id] = result
+    _document_cache.move_to_end(doc_id)
+    if len(_document_cache) > _DOCUMENT_CACHE_MAX:
+        _document_cache.popitem(last=False)  # 一番古いものを落とす
+    return result

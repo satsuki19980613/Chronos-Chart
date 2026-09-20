@@ -441,3 +441,281 @@ def test_fetch_day_error_log_does_not_leak_api_key(tmp_path):
 
     logged = db.get_fetch(edinet.SOURCE, "2026-09-20")
     assert secret not in logged["result"]
+
+
+# ---------- 書類本文の取得・テキスト化（P9-1。SPEC §2.4.8） ----------
+
+
+def _document_zip(members: dict[str, bytes]) -> bytes:
+    """`{ZIP 内パス: 中身}` から ZIP のバイト列を作る（本文取得のテスト用）。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in members.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+_HEADER_HTML = (
+    "<html><head><title>臨時報告書</title></head><body>"
+    "<script>var x = 1;</script><style>.a{color:red}</style>"
+    "<p>提出会社</p>"
+    "</body></html>"
+).encode("utf-8")
+_HONBUN_HTML = (
+    "<html><body><p>1 概要</p><p></p><p></p><p>本文</p></body></html>"
+).encode("utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _clear_document_cache_around_each_test():
+    edinet.clear_document_cache()
+    yield
+    edinet.clear_document_cache()
+
+
+class _FakeStreamResponse(_FakeResponse):
+    """`max_bytes` の検証用。`headers` を持ち、`.content` へのアクセスを検知できる。"""
+
+    def __init__(self, content: bytes = b"", headers: dict | None = None, status_code: int = 200):
+        super().__init__(content=content, status_code=status_code)
+        self.headers = headers or {}
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeStreamSession:
+    """`stream=True` を受け取れる、Content-Length チェック用のフェイクセッション。"""
+
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def get(self, url, params=None, headers=None, timeout=None, stream=None):
+        self.calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout, "stream": stream})
+        return self.response
+
+
+def _stream_client_with(response):
+    session = _FakeStreamSession(response)
+    client = HttpClient(
+        source="edinet",
+        min_interval=0,
+        agent="ChronosChart-test",
+        session=session,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    return client, session
+
+
+# ---- extract_document_text ----
+
+
+def test_extract_document_text_concatenates_files_in_ascending_filename_order():
+    zip_bytes = _document_zip(
+        {
+            "XBRL/PublicDoc/0101010_honbun_x_ixbrl.htm": _HONBUN_HTML,
+            "XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML,
+            "XBRL/PublicDoc/manifest_PublicDoc.xml": b"<manifest/>",
+        }
+    )
+    result = edinet.extract_document_text(zip_bytes)
+    assert result["title"] == "臨時報告書"
+    header_pos = result["text"].index("提出会社")
+    honbun_pos = result["text"].index("本文")
+    assert header_pos < honbun_pos, "0000000 (表紙) より 0101010 (本文) が後に来ていない"
+    assert result["truncated"] is False
+
+
+def test_extract_document_text_strips_script_and_style_content():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    result = edinet.extract_document_text(zip_bytes)
+    assert "var x = 1" not in result["text"]
+    assert "color:red" not in result["text"]
+
+
+def test_extract_document_text_collapses_consecutive_blank_lines():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0101010_honbun_x_ixbrl.htm": _HONBUN_HTML})
+    result = edinet.extract_document_text(zip_bytes)
+    assert "\n\n\n" not in result["text"]
+
+
+def test_extract_document_text_no_htm_in_public_doc_returns_empty():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/manifest_PublicDoc.xml": b"<manifest/>"})
+    result = edinet.extract_document_text(zip_bytes)
+    assert result == {"title": None, "text": "", "truncated": False}
+
+
+def test_extract_document_text_prefers_public_doc_over_other_folders():
+    """PublicDoc がある限り、監査報告書などの他フォルダは読まない。"""
+    zip_bytes = _document_zip(
+        {
+            "XBRL/AuditDoc/0000000_header_x_ixbrl.htm": "<html><body>監査</body></html>".encode("utf-8"),
+            "XBRL/PublicDoc/0101010_honbun_x_ixbrl.htm": "<html><body>本文</body></html>".encode("utf-8"),
+        }
+    )
+    result = edinet.extract_document_text(zip_bytes)
+    assert result["text"] == "本文"
+
+
+def test_extract_document_text_accepts_public_doc_without_xbrl_prefix():
+    """確認書の ZIP は `PublicDoc/…`（`XBRL/` が付かない）だった（2026-09-21 実データで確認）。"""
+    zip_bytes = _document_zip(
+        {
+            "PublicDoc/0000000_header.htm": "<html><body>表紙</body></html>".encode("utf-8"),
+            "PublicDoc/0101010_e02778-00.htm": "<html><body>確認した旨</body></html>".encode("utf-8"),
+        }
+    )
+    result = edinet.extract_document_text(zip_bytes)
+    assert result["text"] == "表紙" + chr(10) * 2 + "確認した旨"
+
+
+def test_extract_document_text_falls_back_to_any_html_when_no_public_doc():
+    """PublicDoc が無い ZIP でも、htm があればテキストにする（何も出ないよりよい）。"""
+    zip_bytes = _document_zip(
+        {
+            "XBRL/AuditDoc/0000000_header_x_ixbrl.htm": "<html><body>監査</body></html>".encode("utf-8"),
+        }
+    )
+    result = edinet.extract_document_text(zip_bytes)
+    assert result["text"] == "監査"
+
+
+def test_extract_document_text_returns_empty_when_no_html_at_all():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/manifest_PublicDoc.xml": b"<manifest/>"})
+    result = edinet.extract_document_text(zip_bytes)
+    assert result == {"title": None, "text": "", "truncated": False}
+
+
+def test_extract_document_text_not_a_zip_returns_empty_without_raising():
+    result = edinet.extract_document_text(b"not a zip file at all")
+    assert result == {"title": None, "text": "", "truncated": False}
+
+
+def test_extract_document_text_truncates_over_max_chars():
+    long_body = "あ" * (edinet.DOCUMENT_MAX_CHARS + 1000)
+    html = f"<html><body><p>{long_body}</p></body></html>".encode("utf-8")
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0101010_honbun_x_ixbrl.htm": html})
+    result = edinet.extract_document_text(zip_bytes)
+    assert result["truncated"] is True
+    assert len(result["text"]) == edinet.DOCUMENT_MAX_CHARS
+
+
+# ---- fetch_document_zip ----
+
+
+def test_fetch_document_zip_uses_spec_url_and_params_via_get():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    client, session = _stream_client_with(_FakeStreamResponse(content=zip_bytes))
+    result = edinet.fetch_document_zip(client, "S100YMVN", "secret-key-value")
+    assert result == zip_bytes
+    call = session.calls[0]
+    assert call["url"] == edinet.DOCUMENT_URL.format(doc_id="S100YMVN")
+    assert call["params"] == {"type": 1, "Subscription-Key": "secret-key-value"}
+
+
+def test_fetch_document_zip_rejects_non_alnum_doc_id():
+    client, session = _stream_client_with(_FakeStreamResponse(content=b""))
+    with pytest.raises(UserFacingError):
+        edinet.fetch_document_zip(client, "../evil", "secret-key-value")
+    assert session.calls == [], "doc_id を検証する前に通信してしまっている"
+
+
+def test_fetch_document_zip_empty_api_key_raises():
+    client, session = _stream_client_with(_FakeStreamResponse(content=b""))
+    with pytest.raises(UserFacingError):
+        edinet.fetch_document_zip(client, "S100YMVN", "")
+    assert session.calls == []
+
+
+def test_fetch_document_zip_does_not_leak_api_key_in_logs(caplog):
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    client, _ = _stream_client_with(_FakeStreamResponse(content=zip_bytes))
+    secret = "sk-super-secret-doc-value"
+    with caplog.at_level(logging.INFO):
+        edinet.fetch_document_zip(client, "S100YMVN", secret)
+    assert secret not in caplog.text
+    assert "Subscription-Key=***" in caplog.text
+
+
+def test_fetch_document_zip_too_large_aborts_without_reading_body():
+    """`Content-Length` だけで中止する。`.content` には（実物とは桁違いに小さい）ダミーしか入れていない。"""
+    response = _FakeStreamResponse(
+        content=b"x" * 10,
+        headers={"Content-Length": str(edinet.DOCUMENT_MAX_BYTES + 1)},
+    )
+    client, session = _stream_client_with(response)
+    with pytest.raises(edinet.DocumentTooLarge) as err:
+        edinet.fetch_document_zip(client, "S100YMVN", "secret-key-value")
+    assert err.value.size_bytes == edinet.DOCUMENT_MAX_BYTES + 1
+    assert response.closed is True, "本体を読まずに中止するなら接続を閉じているはず"
+    assert session.calls[0]["stream"] is True, "ヘッダだけ見るために stream=True で呼んでいるはず"
+
+
+def test_fetch_document_zip_within_limit_succeeds():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    response = _FakeStreamResponse(content=zip_bytes, headers={"Content-Length": str(len(zip_bytes))})
+    client, _ = _stream_client_with(response)
+    result = edinet.fetch_document_zip(client, "S100YMVN", "secret-key-value")
+    assert result == zip_bytes
+
+
+# ---- fetch_document_text / キャッシュ ----
+
+
+def test_fetch_document_text_returns_extracted_result():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    client, session = _stream_client_with(_FakeStreamResponse(content=zip_bytes))
+    result = edinet.fetch_document_text(client, "S100YMVN", "secret-key-value")
+    assert result["title"] == "臨時報告書"
+    assert result["truncated"] is False
+
+
+def test_fetch_document_text_does_not_write_fetch_log(tmp_path):
+    """表示のたびに叩く操作であって取得履歴ではないので fetch_log には書かない。"""
+    db = _db(tmp_path)
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    client, _ = _stream_client_with(_FakeStreamResponse(content=zip_bytes))
+    edinet.fetch_document_text(client, "S100YMVN", "secret-key-value")
+    with db.connect() as conn:
+        rows = conn.execute("SELECT * FROM fetch_log").fetchall()
+    assert rows == []
+
+
+def test_fetch_document_text_caches_and_calls_http_once():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    client, session = _stream_client_with(_FakeStreamResponse(content=zip_bytes))
+    first = edinet.fetch_document_text(client, "S100YMVN", "secret-key-value")
+    second = edinet.fetch_document_text(client, "S100YMVN", "secret-key-value")
+    assert first == second
+    assert len(session.calls) == 1
+
+
+def test_fetch_document_text_lru_evicts_oldest_after_17_entries():
+    def client_for(doc_id: str):
+        zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+        client, session = _stream_client_with(_FakeStreamResponse(content=zip_bytes))
+        return client, session
+
+    first_client, first_session = client_for("S100000001")
+    edinet.fetch_document_text(first_client, "S100000001", "secret-key-value")
+
+    for i in range(2, 18):  # S100000002 〜 S100000017（16件追加。合計17件目で先頭が落ちる）
+        doc_id = f"S1000000{i:02d}"
+        client, _ = client_for(doc_id)
+        edinet.fetch_document_text(client, doc_id, "secret-key-value")
+
+    # 最初のものが呼び直されれば HTTP が再度飛ぶはず
+    edinet.fetch_document_text(first_client, "S100000001", "secret-key-value")
+    assert len(first_session.calls) == 2, "17件目の追加で最初のキャッシュが落ちていない"
+
+
+def test_clear_document_cache_forces_refetch():
+    zip_bytes = _document_zip({"XBRL/PublicDoc/0000000_header_x_ixbrl.htm": _HEADER_HTML})
+    client, session = _stream_client_with(_FakeStreamResponse(content=zip_bytes))
+    edinet.fetch_document_text(client, "S100YMVN", "secret-key-value")
+    edinet.clear_document_cache()
+    edinet.fetch_document_text(client, "S100YMVN", "secret-key-value")
+    assert len(session.calls) == 2

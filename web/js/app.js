@@ -23,10 +23,14 @@
     renderEvents();
   }
 
-  // マーカークリックのたびに呼ばれる。イベント欄の該当行へスクロール・強調する
+  // マーカークリックのたびに呼ばれる。イベント欄の該当行へスクロール・強調するのに加え、
+  // その日（marker_date）の開示を全件モーダルで開く（P9-3）
   function onMarkerClick(id) {
     state.pendingMarkerId = id;
     highlightEventRow(id);
+    const date = id.slice(3);
+    const items = (state.dashboard?.events?.items || []).filter((item) => item.marker_date === date);
+    openDisclosureModal(items, date);
   }
 
   // ---------- 共通 ----------
@@ -592,11 +596,14 @@
   }
 
   // イベント欄の行クリック（委譲。#events-list に一度だけ登録する）
+  // 「開く」ボタンは EDINET を直接開くのではなく、その1件だけのモーダルを開く（P9-3）。
+  // EDINET を開くのはモーダル内のボタンに移した
   function onEventsListClick(e) {
     const openBtn = e.target.closest(".event-open");
     if (openBtn) {
       e.stopPropagation();
-      api.call("open_disclosure", openBtn.dataset.docId).catch((err) => toast(err.message, "error"));
+      const item = (state.dashboard?.events?.items || []).find((i) => i.doc_id === openBtn.dataset.docId);
+      if (item) openDisclosureModal([item]);
       return;
     }
     const row = e.target.closest(".event-item");
@@ -616,6 +623,117 @@
       row.classList.add("is-marker-highlight");
       setTimeout(() => row.classList.remove("is-marker-highlight"), 2000);
     });
+  }
+
+  // ---------- 開示モーダル（P9-3） ----------
+  // docId -> { loading: bool, result, error } のキャッシュ。「同じ書類の本文を2回読み込まない」（SPEC §2.4.8）ため、
+  // モーダルを開くたびに作り直し、閉じたら破棄する（プロセス内キャッシュは Python 側 get_disclosure_text が別途持つ）
+  let modalDocCache = new Map();
+
+  function modalDocBlockHtml(item) {
+    const withdrawn = item.withdrawal != null && item.withdrawal !== 0;
+    const roles = item.roles || [];
+    const showFiler = roles.includes("issuer") || roles.includes("subject");
+    const descLine = item.description ? `<div class="event-desc">${f.escape(item.description)}</div>` : "";
+    const metaParts = [];
+    if (item.reason) metaParts.push(f.escape(item.reason));
+    if (showFiler && item.filer_name) metaParts.push(`提出者: ${f.escape(item.filer_name)}`);
+    const metaLine = metaParts.length ? `<div class="event-meta">${metaParts.join(" ／ ")}</div>` : "";
+    const withdrawnBadge = withdrawn ? `<span class="event-badge is-withdrawn">取下げ</span>` : "";
+    return `
+      <div class="modal-doc" data-doc-id="${f.escape(item.doc_id)}">
+        <div class="event-row-1">
+          <span class="event-time">${f.escape(formatSubmitAt(item.submit_at))}</span>
+          <span class="event-badge category-${f.escape(item.category)}">${f.escape(item.label)}</span>
+          ${withdrawnBadge}
+        </div>
+        ${descLine}
+        ${metaLine}
+        <div class="modal-doc-actions">
+          <button class="btn btn-sm modal-doc-text-btn" data-doc-id="${f.escape(item.doc_id)}">本文を表示</button>
+          <button class="btn btn-sm modal-doc-open-btn" data-doc-id="${f.escape(item.doc_id)}">EDINET で開く</button>
+        </div>
+        <div class="modal-doc-result" data-doc-id="${f.escape(item.doc_id)}"></div>
+      </div>`;
+  }
+
+  // 本文表示エリア（.modal-doc-result）の中身を、キャッシュの状態に応じて描画する
+  function renderModalDocResult(docId) {
+    const el = document.querySelector(`.modal-doc-result[data-doc-id="${CSS.escape(docId)}"]`);
+    if (!el) return;
+    const entry = modalDocCache.get(docId);
+    if (!entry) { el.innerHTML = ""; return; }
+    if (entry.loading) {
+      el.innerHTML = `<div class="modal-doc-status">読み込み中…</div>`;
+      return;
+    }
+    if (entry.error) {
+      el.innerHTML = `<div class="modal-doc-status">${f.escape(entry.error)}</div>`;
+      return;
+    }
+    const res = entry.result;
+    if (!res.available) {
+      el.innerHTML = `<div class="modal-doc-reason">${f.escape(res.reason || "本文を表示できません。")}（「EDINET で開く」からご確認ください）</div>`;
+      return;
+    }
+    const truncatedNote = res.truncated
+      ? `<div class="modal-doc-truncated">（長いため途中までを表示しています。全文は EDINET で確認してください）</div>` : "";
+    el.innerHTML = `<div class="modal-doc-text">${f.escape(res.text)}</div>${truncatedNote}`;
+  }
+
+  // 本文の取得。すでにキャッシュにあれば何もしない（読み込み中も含めて二重取得を防ぐ）
+  async function loadModalDocText(docId) {
+    const existing = modalDocCache.get(docId);
+    if (existing && (existing.loading || existing.result)) return;
+    modalDocCache.set(docId, { loading: true });
+    renderModalDocResult(docId);
+    try {
+      const res = await api.call("get_disclosure_text", docId);
+      modalDocCache.set(docId, { result: res });
+    } catch (err) {
+      // キーの誤り・レート制限などは例外になる。本文欄には出さずトースト、欄自体は空に戻す
+      modalDocCache.delete(docId);
+      renderModalDocResult(docId);
+      toast(err.message, "error");
+      return;
+    }
+    renderModalDocResult(docId);
+  }
+
+  // マーカークリック（複数件）／イベント欄の「開く」（1件）の両方から呼ぶ。
+  // 1件だけのときはボタンを押す手間を省くため自動で本文を読み込む（SPEC §2.4.8・ユーザー要望）
+  function openDisclosureModal(items, headingDate) {
+    if (!items.length) return;
+    modalDocCache = new Map();
+    const dialog = $("disclosure-modal");
+    const date = headingDate ?? (items[0].marker_date ?? items[0].submit_at.slice(0, 10));
+    $("modal-title").textContent = `${f.date(date)}の開示 ${items.length}件`;
+    $("modal-body").innerHTML = items.map(modalDocBlockHtml).join("")
+      + `<p class="hint modal-footnote">出典：EDINET（金融庁）。本ツールが加工して表示しています</p>`;
+    if (!dialog.open) dialog.showModal();
+    if (items.length === 1) loadModalDocText(items[0].doc_id);
+  }
+
+  // モーダル内のクリック（委譲）。本文表示・EDINET を開く・閉じるボタンをここでまとめて扱う
+  function onModalBodyClick(e) {
+    const textBtn = e.target.closest(".modal-doc-text-btn");
+    if (textBtn) {
+      loadModalDocText(textBtn.dataset.docId);
+      return;
+    }
+    const openBtn = e.target.closest(".modal-doc-open-btn");
+    if (openBtn) {
+      api.call("open_disclosure", openBtn.dataset.docId).catch((err) => toast(err.message, "error"));
+    }
+  }
+
+  // 背景（::backdrop）クリックで閉じる。<dialog> はクリック位置に関わらず自身の click イベントが飛んでくるので、
+  // クリック座標が dialog 自身の矩形の外（＝backdrop）にあるかどうかで判定する
+  function onModalBackdropClick(e) {
+    if (e.target !== e.currentTarget) return; // 内部の要素のクリックは無視
+    const rect = e.currentTarget.getBoundingClientRect();
+    const inside = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+    if (!inside) e.currentTarget.close();
   }
 
   // 需給ペインのチップは、表示中の銘柄にデータが1件も無ければ無効化し理由を表示する。
@@ -808,6 +926,10 @@
     $("search-form").addEventListener("submit", search);
     $("stock-list").addEventListener("click", onStockListClick);
     $("events-list").addEventListener("click", onEventsListClick);
+    $("modal-body").addEventListener("click", onModalBodyClick);
+    $("modal-close").addEventListener("click", () => $("disclosure-modal").close());
+    $("disclosure-modal").addEventListener("click", onModalBackdropClick);
+    $("disclosure-modal").addEventListener("close", () => { modalDocCache = new Map(); });
     $("update-all").addEventListener("click", updateAll);
     $("short-all").addEventListener("click", runShortAll);
     $("disclosures-fetch").addEventListener("click", () => runDisclosures(0));
