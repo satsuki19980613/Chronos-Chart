@@ -3,6 +3,25 @@
 前提となる調査結果は [RESEARCH.md](RESEARCH.md) を参照。
 土台は Autotechnical（pywebview + yfinance + SQLite + Lightweight Charts v5）。
 
+> ## ⚠ 訂正表（2026-09-20 設計レビューによる）
+>
+> 本文はレビュー前のまま残してある。**以下は [SPEC.md](SPEC.md) 1.1 で変更された。食い違う場合は必ず SPEC を優先する。**
+> 変更の理由は SPEC §12 と [REVIEW_RESULT.md](REVIEW_RESULT.md)。
+>
+> | 箇所 | 本文の記述 | SPEC 1.1 での扱い |
+> |---|---|---|
+> | §0・§1.3 | 「信用残」を日証金＋karauri の併用で取得。取得済み日付を持ち未取得分のみ落とす | karauri は空売り残高のみ。日証金は**蓄積型**（過去分は取り直せない）。SPEC §2.3 |
+> | §1.2 | 実行は手動トリガのみ | **起動時に1回だけ自動更新する**（空売りは設定でオンにした場合のみ）。SPEC §2.8.2 |
+> | §1.4 | `secCode` で抽出。登録日以降を遡って埋める | EDINET コードで突合。日次キャッシュを保持し、範囲は株価の保有期間。SPEC §2.4 |
+> | §2 | XBRL CSV を `disclosure_facts` に格納、PDF を `data/disclosures/` に保存 | 初期リリースの対象外（SPEC §11）。本文は EDINET の閲覧ページを開く |
+> | §2・§5.1 | 「決算系」のマーカー | 「有報・半期報」。決算発表日ではない旨を注記。SPEC §2.4.6 |
+> | §3 | 追加テーブル一覧 | `disclosure_facts` を削除、`edinet_codes`・`disclosure_links` を追加。APIキーは `settings` ではなく `keyring` |
+> | §4.1 | 429 を受けたらその日は打ち切り。RPM/RPD は区別できない | `quotaId` で区別する。SPEC §2.7.2 |
+> | §4.2 | 「結論 → 根拠」の順。切れていたら分割生成 | 「根拠 → 結論」の順。分割生成はしない。SPEC §2.7.4〜2.7.5 |
+> | §5.1 | `lineType: 2`（階段状）、whitespace data、チャート下にイベント欄、ヒットテスト API は無い | `LWC.LineType.WithSteps`、whitespace 不要、イベント欄は右カラム、`hoveredObjectId` を使う。SPEC §2.5〜2.6 |
+> | §6 | モジュール構成 | `jobs.py`・`autoupdate.py`・`errors.py`・`js/jobs.js` を追加。SPEC §5 |
+> | §7 | 実装順序 | [PLAN.md](PLAN.md) 1.1 を参照 |
+
 ---
 
 ## 0. 確定した方針

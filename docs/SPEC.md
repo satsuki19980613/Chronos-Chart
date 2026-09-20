@@ -2,14 +2,16 @@
 
 | 項目 | 内容 |
 |---|---|
-| 版 | 1.0 |
+| 版 | 1.1 |
 | 作成日 | 2026-09-20 |
-| 状態 | レビュー前 |
+| 最終更新 | 2026-09-20 |
+| 状態 | **レビュー反映済み**（[REVIEW_RESULT.md](REVIEW_RESULT.md) の指摘とユーザー決定を反映） |
 | 土台 | Autotechnical (satsuki19980613/Autotechnical) |
-| 関連文書 | [RESEARCH.md](RESEARCH.md) 調査結果 / [DESIGN.md](DESIGN.md) 設計方針 / [PLAN.md](PLAN.md) 実装計画 |
+| 関連文書 | [RESEARCH.md](RESEARCH.md) 調査結果 / [DESIGN.md](DESIGN.md) 設計方針 / [PLAN.md](PLAN.md) 実装計画 / [REVIEW_RESULT.md](REVIEW_RESULT.md) 設計レビュー |
 
 **本書がデータモデルと機能仕様の正（single source of truth）である。**
-DESIGN.md は「なぜその設計にしたか」の根拠を示す文書であり、仕様が食い違う場合は本書を優先する。
+RESEARCH.md / DESIGN.md はレビュー前の記述を含む。**食い違う場合は必ず本書を優先する。**
+版 1.0 からの変更点と理由は §12 を参照。
 
 ---
 
@@ -33,40 +35,47 @@ DESIGN.md は「なぜその設計にしたか」の根拠を示す文書であ�
 
 **やること**
 
-- 空売り残高の自動取得（karauri.net）
-- 貸借取引残高の自動取得（日本証券金融）
-- EDINET API v2 による法定開示の取得・分類・保存
+- **起動時の自動更新**（登録銘柄の株価・貸借取引残高・開示を、起動のたびに1回だけ差分取得する。§2.8）
+- 空売り残高の取得（karauri.net）
+- 貸借取引残高の取得と**蓄積**（日本証券金融。取得開始日以降の分だけが貯まる。§2.3）
+- EDINET API v2 による法定開示の取得・分類
 - 需給のチャート表示（サブペイン）
-- 開示イベントのチャートマーカーと、チャート下のイベント欄
+- 開示イベントのチャートマーカーと、イベント欄
 - Gemini API による総合分析レポートの生成（手動実行・無料枠の自前管理）
 
 **やらないこと**
 
 | 項目 | 理由 |
 |---|---|
-| 決算短信・業績予想の上方修正の取得 | TDnet 管轄で EDINET に存在せず、無料かつ合法な取得手段が無い（RESEARCH §2） |
-| 取得データの再配布・公開・サーバー設置 | JPX・日証金の規約が二次利用／私的利用超過を禁止（RESEARCH §3.4） |
+| 決算短信・業績予想の上方修正の取得 | TDnet 管轄で EDINET に存在せず、無料かつ合法な取得手段が無い（RESEARCH §2）。**チャートに決算発表日は表示されない**（§2.5.3） |
+| 取得データの再配布・公開・サーバー設置 | JPX・日証金の規約が二次利用／私的利用超過を禁止（RESEARCH §3.4）。**テストフィクスチャとしてのコミットも含む**（§10.1） |
 | 需給データの AI への送信 | JPX の生成AI条項と Gemini 無料枠の学習利用の重なりを避ける（§7.2） |
 | 自動売買・発注 | 本ツールは分析用途に限る |
-| 常駐ポーリング・スケジュール実行 | 対象サーバーへの負荷を最小化するため、取得はすべて手動トリガ |
+| 常駐ポーリング・定期実行 | 対象サーバーへの負荷を最小化する。**例外は起動時の1回の自動更新のみ**（§2.8）。アプリを開いたままでも再実行しない |
+| AI 分析の自動実行 | 無料枠を消費するため、必ずユーザーの明示操作で実行する |
 | ユーザーの保有株数・取得単価・損益の管理 | そもそも保持しない |
+| 開示 PDF のローカル保存、XBRL 財務数値の DB 化 | 初期リリースの対象外（§11 将来拡張）。開示本文は EDINET の閲覧ページをブラウザで開く |
 
 ### 1.4 用語
 
 | 用語 | 定義 |
 |---|---|
-| **空売り残高** | 金商法の空売り残高報告制度に基づく残高。発行済株式総数の 0.5% 以上で報告義務。**報告義務者（機関）ごと**に公表される |
-| **貸借取引残高** | 日本証券金融が公表する貸借取引の残高。**貸借銘柄のみ**が対象 |
+| **空売り残高** | 金商法の空売り残高報告制度に基づく残高。発行済株式総数の 0.5% 以上で報告義務。**報告義務者（機関）ごと**に公表される。0.5% 未満のポジションは公表されない |
+| **貸借取引残高** | 日本証券金融が公表する貸借取引の残高。**貸借銘柄のみ**が対象。**融資残高**（買い方向）と**貸株残高**（売り方向）からなる |
 | **信用取引残高** | 信用買残・売残。JPX が週次で公表するが PDF のみのため本ツールでは扱わない |
 | **計算日** | 空売り残高の基準日。報告者ごとに異なる |
+| **申込日** | 貸借取引残高の基準日（取引の申込日）。本ツールではこれをチャートの日付に使う |
 | **docID** | EDINET の書類管理番号。開示書類の一意キー |
 | **法定開示** | 金商法に基づく開示。EDINET で公開される |
 | **適時開示** | 取引所規則に基づく開示。TDnet で公開される。本ツールの対象外 |
 
 > **UI 上の表記に関する制約**
-> 日証金から取得するのは貸借取引残高であって信用取引残高そのものではない。
-> 画面・レポート・CSV のラベルは必ず「貸借取引残高（日証金）」と表記し、
-> 「信用残」という語を単独で使わない。出典と対象銘柄の限定も併記する。
+> - 日証金から取得するのは貸借取引残高であって信用取引残高そのものではない。
+>   画面のラベルは必ず「貸借取引残高（日証金）」と表記し、「信用残」という語を単独で使わない。
+>   対象が貸借銘柄に限られること、**取得開始日以降のデータしか無い**ことを併記する。
+> - 空売り残高のペインは「空売り残高（報告義務 0.5% 以上の合計・本ツール算出）」と表記する。
+>   **0 は「空売りが無い」ではなく「0.5% 以上の報告者がいない」**意味であることを注記する。
+> - 需給データは画面にのみ表示する。エクスポート・AI レポートには一切載せない（§7）。
 
 ---
 
@@ -78,34 +87,59 @@ DESIGN.md は「なぜその設計にしたか」の根拠を示す文書であ�
 
 | キー | 型 | 既定値 | 説明 |
 |---|---|---|---|
-| `edinet_api_key` | str | 空 | EDINET API v2 のサブスクリプションキー |
-| `gemini_api_key` | str | 空 | Gemini API キー |
+| `edinet_api_key` | secret | 空 | EDINET API v2 のサブスクリプションキー。**保存先は §2.1.2** |
+| `gemini_api_key` | secret | 空 | Gemini API キー。**保存先は §2.1.2** |
 | `gemini_model` | str | 空 | 使用するモデル名。ユーザーが指定する |
 | `gemini_rpm` | int | 0 | 1分あたりリクエスト上限。0 は「未設定＝AI機能を無効」 |
 | `gemini_tpm` | int | 0 | 1分あたりトークン上限 |
 | `gemini_rpd` | int | 0 | 1日あたりリクエスト上限 |
-| `gemini_max_output_tokens` | int | 8192 | 出力トークン上限 |
+| `gemini_max_output_tokens` | int | 8192 | 出力トークン上限（thinking トークンもこの枠を消費する） |
+| `gemini_thinking_budget` | int | 1024 | thinking の予算。モデル系列により指定方法が異なるため、適用方法は P6-1 で確定 |
 | `scrape_interval_sec` | int | 10 | スクレイピングのリクエスト間隔（秒）。下限 5 |
 | `scrape_contact` | str | 空 | User-Agent に含める連絡先 |
-| `disclosure_fetch_pdf` | bool | false | 開示PDFを一括取得するか |
-| `short_recheck_hours` | int | 24 | 新着が無かった銘柄の再取得を抑止する時間 |
+| `short_recheck_hours` | int | 24 | 同一銘柄の空売り残高を再取得しない時間（一括・自動取得に適用） |
+| `auto_update_on_start` | bool | true | 起動時の自動更新を行うか（§2.8） |
+| `auto_update_short` | bool | false | 起動時の自動更新に空売り残高（karauri.net）を含めるか |
+| `auto_update_min_interval_min` | int | 60 | 前回の取得からこの分数が経っていないソース／銘柄は自動更新でスキップ |
 
 #### 2.1.2 APIキーの扱い
 
 - **キーはアプリに埋め込まない。** 必ずユーザーが入力する（RESEARCH §1.1）
-- `settings` テーブルに保存する。DB ファイルは `.gitignore` 済みの `data/` 配下
+- **保存先は OS の資格情報ストア**（`keyring` ライブラリ。Windows では資格情報マネージャー）。
+  サービス名 `ChronosChart`、ユーザー名に設定キー名を使う。**DB にもファイルにも平文で書かない**
+  - 理由: `data/` がクラウド同期フォルダ（OneDrive 等）の配下に置かれる場合があり、DB に平文で置くとキーがクラウドに上がる
+  - `keyring` が使えない環境では保存を拒否し、環境変数での指定を案内する
+- 環境変数 `CHRONOS_EDINET_API_KEY` / `GEMINI_API_KEY` があれば保存値より優先する
 - **画面ではマスク表示**（先頭4文字＋`****`）。「表示」ボタンで一時的に平文表示
 - **ログにキーを出力しない。** URL をログに出す際は `Subscription-Key` の値を `***` に置換する
-- 環境変数 `CHRONOS_EDINET_API_KEY` / `GEMINI_API_KEY` があれば設定値より優先する
+- キー以外の設定値は `settings` テーブルに保存する
 
 #### 2.1.3 画面要件
 
 - EDINET キーの欄には**取得手順を併記**する。手順が重いため（サインアップ → CAPTCHA → パスワード → **MFA（電話番号＋SMS/音声）** → 連絡先入力）、
   この5段階を明示し、発行ページ `https://api.edinet-fsa.go.jp/api/auth/index.aspx?mode=1` へのリンクを置く
 - 「2年間利用がないキーは自動削除される」旨を注記
-- Gemini の上限値欄には「公式ドキュメントに無料枠の数値表は無い。`https://aistudio.google.com/rate-limit` で自分のアカウントの値を確認して入力すること」と明記
+- Gemini の上限値欄には「公式ドキュメントに無料枠の数値表は無い。`https://aistudio.google.com/rate-limit` で自分のアカウントの値を確認して入力すること」
+  「上限は API キー単位ではなく**プロジェクト単位**で、他のツールで同じプロジェクトを使うと本ツールの残量表示より早く尽きる」と明記
+- `scrape_contact` の欄には「**この連絡先は karauri.net へのリクエストごとに User-Agent として送信される**」と明記
+- 起動時の自動更新のオン／オフと、空売り残高を含めるかのチェックボックス。後者には「銘柄数 × 間隔の時間がかかり、相手サイトへ毎日アクセスすることになる」と注記
 - 各データソースの規約要約と、**取得データを再配布しない**旨を表示
-- 接続テストボタン（EDINET / Gemini）。EDINET は `documents.json` を1回、Gemini は最小プロンプトで疎通確認
+- **データ保存先がクラウド同期フォルダ配下と推定される場合は警告を出す**
+  （環境変数 `OneDrive` / `OneDriveConsumer` / `OneDriveCommercial` のいずれかの配下。
+  SQLite の WAL ファイルと同期ツールの相性が悪いため、`CHRONOS_DATA_DIR` で同期対象外の場所を指定するよう案内する）
+- Gemini 打ち切りフラグの**手動解除ボタン**（§2.7.2）
+- 接続テストボタン（EDINET / Gemini）。EDINET は `documents.json` を1回、Gemini は最小プロンプトで疎通確認。
+  **実装は各クライアントの完成後**（EDINET は P4、Gemini は P6。それまでボタンは出さない）
+
+#### 2.1.4 別 PC への移行
+
+リポジトリをクローンしただけでは、設定も取得済みデータも引き継がれない（`data/` は Git 対象外、APIキーは PC ごとの資格情報ストア）。
+
+- **`data/` フォルダをまるごとコピーする。** 設定値（キー以外）・株価・開示キャッシュ・需給データ・レポートが引き継がれる。
+  **貸借取引残高は取り直せない**（§2.3.2）ので、コピーしないと蓄積がその日からやり直しになる
+- **APIキーは新しい PC で入力し直す**（同じキーを使える。再発行は不要）。環境変数での指定でもよい
+- キー未設定でも起動と株価・需給の機能は動く。開示の取得と AI 分析だけが無効になり、自動更新は該当ソースを黙ってスキップする（§6）
+- この手順を README に記載する（PLAN P7-1）
 
 ### 2.2 空売り残高の取得
 
@@ -121,25 +155,36 @@ DESIGN.md は「なぜその設計にしたか」の根拠を示す文書であ�
 - 対象テーブル: `<table id="sort" class="mtb2">`
 - 列順: `計算日 / 空売り者 / 残高割合 / 増減率 / 残高数量 / 増減量 / 備考`
 - データ行: `<tr class="obb">` と `<tr class="occ">`（ゼブラ用の交互クラス。両方をデータ行として扱う）
+- **報告者の同一性は名称ではなく ID で判定する。** 空売り者のセルは `<a href="/<コード>/?f=<機関ID>">` のリンクで、
+  この `f` の値を `holder_id` として保存する。名称は表示用（名称変更・表記ゆれで別人扱いにしないため）。
+  リンクが無い行は名称を `holder_id` の代用にし、警告ログを出す
 - 数値のパース:
   - 残高割合・増減率: `%` とカンマを除去して float。空文字・`-` は NULL
   - 残高数量・増減量: カンマを除去して int。空文字・`-` は NULL
   - 増減のマイナスは `class="ct co_br"`、プラスは `class="ct co_red"` で色分けされているが、**値の符号は文字列から読む**（クラスに依存しない）
-- 備考: `<span class="after">報告義務消失</span>` や `再IN（前回YYYY-MM-DD）` をそのまま文字列で保存
-- **テーブルが見つからない／列数が想定と違う場合はエラーとして扱い、部分的な保存をしない**（サイト構造変更の検知）
+- 備考: `報告義務消失` や `再IN（前回YYYY-MM-DD）` をそのまま文字列で保存。**未知の文言はログに出す**
+- **テーブルが見つからない／列数が想定と違う場合はエラーとして扱い、保存を一切行わない**（サイト構造変更の検知）
+- 保存は**銘柄単位の全置換**（ページに全履歴が1枚で載るため）。パースが完全に成功したときだけ、
+  1トランザクションでその銘柄の `short_positions` を入れ替え、続けて `short_totals` を再算出する。
+  サイト側の訂正・削除にも追従できる
+- 同一 `(計算日, holder_id)` の重複行があった場合は**後の行を採用して警告ログ**を出す（全体を失敗させない）
+
+> レビュー時の観察: 7203 のページは約40行・最新行 2022-04 で、備考は消失／再IN の交互のみ。
+> 大型株では 0.5% 以上の報告者がほとんど現れないため、ペインがほぼ空になるのは正常である。
 
 #### 2.2.3 残高合計の算出（`short_totals`）
 
 計算日は報告者ごとに異なるため、単純な日付ごとの合計はできない。以下で算出する。
 
 1. 対象銘柄の `short_positions` から計算日の集合 D を取る
-2. 各 d ∈ D について、報告者ごとに `calc_date <= d` を満たす最新の1件を選ぶ
-3. その1件の `note` が報告義務消失を示す場合、その報告者は当該日の合計に含めない
-4. `total_ratio` = 選ばれたレコードの `ratio` の合計、`holders` = 件数、`total_qty` = `quantity` の合計
+2. 各 d ∈ D について、`holder_id` ごとに `calc_date <= d` を満たす最新の1件を選ぶ
+3. その1件が**報告義務消失**なら、その報告者は当該日の合計に含めない。
+   判定は「`note` に `消失` を含む **または** `ratio < 0.5`」の二重条件（文字列一致だけに依存しない）
+4. `total_ratio` = 選ばれたレコードの `ratio` の合計、`holders` = 件数、`total_qty` = `quantity` の合計。
+   該当者がいなければ `0 / 0 / 0`
 5. 結果を `short_totals` に全置換で保存する
 
-> 合計値はサイトが公表している値ではなく**本ツールが算出した値**である。
-> 画面とレポートにその旨を注記する。
+> 合計値はサイトが公表している値ではなく**本ツールが算出した値**である。画面にその旨を注記する（§1.4）。
 
 #### 2.2.4 負荷対策（遵守必須）
 
@@ -148,48 +193,67 @@ DESIGN.md は「なぜその設計にしたか」の根拠を示す文書であ�
 - `scrape_contact` が未設定の場合、スクレイピングを実行せずエラーを返す（連絡先を名乗れない自動取得はしない）
 - `ETag` / `Last-Modified` が返らないため HTTP キャッシュは使えない。代わりに:
   - `fetch_log` に `source='karauri'`, `key=<symbol>` で最終取得時刻を記録
-  - 前回取得で新しい計算日が増えなかった銘柄は、`short_recheck_hours`（既定24h）以内の再取得をスキップ
-- 全銘柄更新はユーザーが明示的に実行したときのみ。実行前に**所要時間の見積り（銘柄数 × 間隔）を表示して確認を取る**
+  - **一括取得と自動更新では、新着の有無によらず** `short_recheck_hours`（既定24h）以内に取得した銘柄をスキップする
+    （元データの公表は1日1回のため）。ユーザーが単一銘柄を明示的に取得する操作だけは例外
+- 一括取得はジョブとして実行し（§2.8.1）、実行前に**所要時間の見積り（対象銘柄数 × 間隔）を表示して確認を取る**。
+  **実行中はいつでも中断できる**
+- **HTTP 403 / 429 を受けたら、その時点でバッチ全体を中止する**（拒否の意思表示に対して続行しない。リトライもしない）
+- 5xx・タイムアウトはその銘柄を中止して次へ進み、連続3回でバッチ全体を中止する
+- リトライ時の待機は**ソースの最小間隔を下回らない**（§4.1）
 - 取得は深夜〜早朝を推奨する旨を画面に注記（公表は取引時間外）
-- HTTP 4xx/5xx を受けたらその銘柄を中止し、連続3回失敗したらバッチ全体を中止する
+- 起動時の自動更新に含めるかは `auto_update_short`（既定 false）で決める
 
-### 2.3 貸借取引残高の取得
+### 2.3 貸借取引残高の取得（蓄積型）
 
-#### 2.3.1 取得元
+#### 2.3.1 取得元（実ファイル確認済み）
 
-`https://www.taisyaku.jp/download/` 配下の CSV。
+| ファイル | URL | 内容 |
+|---|---|---|
+| `zandaka.csv` | `https://www.taisyaku.jp/data/zandaka.csv` | 銘柄別残高。**全銘柄・最新1申込日分のみ** |
+| `meigara.csv` | `https://www.taisyaku.jp/data/meigara.csv` | 貸借取引対象銘柄一覧（最新のみ） |
 
-- `meigara.csv` — 貸借銘柄一覧。対象銘柄かどうかの判定に使う
-- `zandaka.csv` — 銘柄別残高（日次）
+レビュー時（2026-09-20）に確認した事実:
 
-> **未確定事項（実装時に確定する）**
-> `zandaka.csv` の列構成・文字コード・日付書式は今回の調査で実ファイルまで確認できていない。
-> 実装の最初のタスクとして実ファイルを1件取得し、列定義を本書に追記してから実装する（PLAN P2-3）。
-> それまで `margin_balances` のカラムは暫定である。
+- **ファイル名は固定で日付を含まない。過去分のファイルは提供されていない**（過去データはサイトの銘柄検索機能のみ。本ツールでは使わない）
+- 文字コードは **Shift_JIS 系**（`cp932` で読む）。ヘッダ行あり。各値はダブルクォート囲み。日付は `YYYY/MM/DD`
+- 列は**約36列**。先頭から `申込日 / 決済日 / 銘柄コード / 銘柄名 / （区分2列）/ 速報・確報の区分 / 融資新規 / 融資返済 / 融資残高 /
+  貸株新規 / 貸株返済 / 貸株残高 / 差引残高 / （以降は金額・回転日数など）` と推定される
+
+> **未確定事項（P2-3 で確定する）**
+> 上の列名は文字化けした状態での推定を含む。P2-3 で `cp932` で正しく読み、
+> ヘッダの全列名・速報/確報の区分値・区分列の意味を本節に追記してから P2-4 に進む。
+> パーサは**列位置ではなくヘッダ名**で列を引き、必要な列が無ければ保存せずエラーにする。
 
 #### 2.3.2 取得方針
 
-- ファイル単位の取得なので、`fetch_log` に `source='taisyaku'`, `key=<日付>` を記録し**未取得日のみ取得**
-- 全銘柄分が1ファイルに入るため、**1回の取得で登録銘柄すべてを更新できる**（銘柄ごとのリクエストは発生しない）
+- 過去分を取り直す手段が無いため、**取得した日の分だけが貯まる蓄積型**とする。
+  取りこぼしを減らすため、**起動時の自動更新に既定で含める**（§2.8。1起動あたり最大1リクエスト）
+- 1回の取得で全銘柄分が入るので、登録銘柄の行だけを `margin_balances` に保存する（銘柄ごとのリクエストは発生しない）
+- 差分の判断はファイル内の申込日で行う: 取得した申込日が保存済みで、区分も同じなら何もしない
+- **速報と確報**: 同じ申込日について後から確報が出る。PK は `(symbol, date)` とし、
+  **確報は速報を上書きする。速報で確報を上書きしない**。`kind` 列に区分を残す
+- `fetch_log` は `source='taisyaku'`, `key='zandaka'` で最終取得時刻だけを記録する（日付単位の取得済み管理はしない）
 - 貸借銘柄でない銘柄は行が存在しない。その旨を画面に表示し、エラーにはしない
+- 欠測日（取得しなかった日）は**欠測のまま**にする。補間も据え置きもしない（表示は §2.5.2）
 
 #### 2.3.3 規約遵守
 
 - 日証金の規約は「私的利用の範囲を超えて利用することはできず、（中略）第三者の利用に供することを固く禁じます」
 - 取得したデータを**エクスポート機能の対象に含めない**（`app/ai_export.py` の出力にも含めない）
+- **実ファイルを Git にコミットしない**（§10.1）
 - README と設定画面に出典と制限を明記する
 
-### 2.4 開示の取得・分類・保存
+### 2.4 開示の取得・分類
 
 #### 2.4.1 取得元
 
-EDINET API v2。キーは**クエリパラメータ `Subscription-Key`**（ヘッダではない）。
+EDINET API v2。キーは**クエリパラメータ `Subscription-Key`**（API 仕様書で確認済み）。
 
 書類一覧:
 
     GET https://api.edinet-fsa.go.jp/api/v2/documents.json?date=YYYY-MM-DD&type=2&Subscription-Key=<KEY>
 
-書類取得:
+書類取得（初期リリースでは使わない。§11）:
 
     GET https://api.edinet-fsa.go.jp/api/v2/documents/<docID>?type=<1-5>&Subscription-Key=<KEY>
 
@@ -199,59 +263,77 @@ EDINET API v2。キーは**クエリパラメータ `Subscription-Key`**（ヘ�
 | 2 | PDF | PDF |
 | 3 | 代替書面・添付文書 | ZIP |
 | 4 | 英文ファイル | ZIP |
-| 5 | XBRL→CSV変換済 | ZIP |
+| 5 | CSV（XBRL→CSV変換済） | ZIP |
 
-#### 2.4.2 銘柄の突き合わせ
+#### 2.4.2 日次キャッシュ（銘柄で絞る前に保持する）
 
-- `documents.json` の `secCode` は**5桁**（4桁コード＋末尾0）
-- `stocks.code`（4桁）から `f"{code}0"` を作って比較する
-- `secCode` が NULL の行（ファンド等）はスキップ
+- `documents.json` のレスポンスは、**銘柄で絞り込む前に**日付ごとにそのまま保存する:
+  `data/edinet_cache/YYYY-MM-DD.json.gz`
+- `disclosures` への登録はキャッシュを走査して行う。**銘柄を新規登録・再登録したときは、API を呼ばずに
+  既存キャッシュを再走査して、その銘柄の過去の開示を埋める**
+  - 理由: 取得時点の登録銘柄で絞って捨てると、後から登録した銘柄の過去開示が二度と取れなくなる
+- キャッシュは EDINET の公開メタデータであり、需給データではない。`data/` 配下（Git 対象外）に置く
 
-#### 2.4.3 取得範囲と差分
+#### 2.4.3 銘柄の突き合わせ
 
-- 初回: 登録銘柄の `stocks.registered_at` の日付以降、または過去1年のいずれか短い方から
-- 以後: `fetch_log` の `source='edinet'`, `key=<日付>` に無い日付のみ
-- 上限: `date` は当日以前かつ10年以内（API 制約）
-- 土日祝はレスポンスが空になるだけなので、特別扱いせず取得して記録する
+`secCode` は**提出者**の証券コードであり、大量保有報告書や公開買付では対象会社を指さない。
+EDINET コードで突き合わせる。
 
-#### 2.4.4 レート制限
+1. **EDINET コードリスト**（`https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelist/Edinetcode.zip`）を取り込み、
+   `edinet_codes` テーブルに `証券コード → EDINET コード` の対応を持つ。取得は初回と、未解決の登録銘柄があるとき、
+   および最終取得から30日経過時のみ（ZIP 内 CSV の文字コード・列構成は P4-1 で確認）
+2. 登録銘柄の EDINET コード E を求める（`stocks.code` の4桁 + `0` の5桁で `edinet_codes.sec_code` を引く）
+3. 書類ごとに、次の規則で登録銘柄との関係（`role`）を決める
+
+| docTypeCode | 突合フィールド | role |
+|---|---|---|
+| 350 / 360（大量保有） | `issuerEdinetCode == E` | `issuer`（保有される側） |
+| 240〜320（公開買付関連） | `subjectEdinetCode == E` | `subject`（対象会社） |
+| 同上 | `edinetCode == E` | `filer`（買付者・意見表明者として） |
+| 上記以外すべて | `edinetCode == E` | `filer` |
+
+- **350/360 を `edinetCode`（提出者）で突合しない。** 登録銘柄が他社株を保有して提出した大量保有報告書は、
+  その銘柄自身の需給イベントではないため登録しない
+- `secCode` は EDINET コードが解決できない銘柄の補助としてのみ使う（`secCode == f"{code}0"` かつ 350/360 以外）
+- 1つの書類が複数の登録銘柄に関係し得る（買付者も対象会社も登録済みなど）。
+  書類は `disclosures`、銘柄との関係は `disclosure_links` に分けて持つ（§3）
+
+#### 2.4.4 取得範囲と差分
+
+- 対象日の範囲: **登録銘柄の株価の最古日（全銘柄の `MIN(prices.date)` の最小値）から当日まで**。
+  ただし API 制約により当日以前かつ10年以内
+- 取得対象は「**確定済みでない日付**」。ある日付が確定済みとは:
+  `fetch_log(source='edinet', key=<日付>)` の `result` が `ok` または `empty` で、
+  かつ `fetched_at` が**対象日の翌日 00:30（日本時間）以降**であること
+  - 当日分は何度取得しても確定済みにならない（その日の後続提出を取り逃がさないため）
+  - `result` が `error:…` の日付は再取得対象に残る
+- 確定済みの日付は原則として再取得しない。過去分にも取下げ・不開示・書類情報修正による更新があり得るため（API 仕様書 3-1-3-1）、
+  設定タブに「直近90日を取り直す」操作を用意する（自動では行わない）
+- 土日祝はレスポンスが空になるだけなので、特別扱いせず取得して `empty` と記録する
+- 初回（1年分で約365リクエスト・1秒間隔で6〜10分）はジョブとして実行し、進捗表示と中断ができる（§2.8.1）。
+  中断しても取得済みの日付は保持され、次回は続きから再開する
+
+#### 2.4.5 レート制限
 
 - **1リクエストあたり 1 秒以上空ける**
 - 当日分の再取得は1分に1回を上限（当日データは8:30過ぎから原則1分毎更新のため、それ以上は無意味）
-- 公式な数値上限は非公開。429 を受けたら指数バックオフ（1s → 2s → 4s、最大3回）し、なお失敗したらバッチを中止
+- 公式な数値上限は非公開。429 を受けたら指数バックオフ（1s → 2s → 4s、最大3回）し、なお失敗したらジョブを中止（取得済み分は保持）
 
-#### 2.4.5 分類と保存方針
+#### 2.4.6 分類
 
-| 分類 | docTypeCode | 保存 |
+表示上の分類（`disclosures.category`）。初期リリースでは XBRL を取り込まないため、保存方法による区別は無い。
+
+| category | 対象 docTypeCode | 表示名 |
 |---|---|---|
-| **A: DB正規化** | 120/130（有報）、140/150（四半期）、160/170（半期） | メタデータを `disclosures`、`type=5` の CSV をパースして `disclosure_facts` |
-| **B: メタデータ＋文書** | 180/190（臨時報告書）、350/360（大量保有）、220/230（自己株買付）、240〜320（公開買付関連）、030/040（届出書）、235/236（内部統制） | メタデータを `disclosures`。本文は `type=2`(PDF) を要求時のみ取得 |
-| **C: 記録のみ** | 上記以外 | メタデータを `disclosures` のみ |
+| `report` | 120/130（有報）、140/150（四半期。**過去分のみ**）、160/170（半期） | 有報・半期報 |
+| `supply` | 350/360（大量保有）、220/230（自己株買付）、240〜320（公開買付関連） | 需給関連 |
+| `other` | 180/190（臨時報告書）、030/040（届出書）、235/236（内部統制）、その他すべて | その他 |
 
-- 分類 A でも `csvFlag != 1` の場合は分類 B と同じ扱いにフォールバックする
-- `withdrawalStatus != 0`（取下げ）の書類はイベント欄に「取下げ」として表示し、`disclosure_facts` には取り込まない
-- PDF は `disclosure_fetch_pdf` が true のときのみ一括取得。既定は false で、ユーザーが個別に要求したときだけ取得する
-
-#### 2.4.6 EDINET CSV（type=5）のパース
-
-- ZIP 内の `XBRL_TO_CSV` フォルダのファイルが対象
-- **拡張子は .csv だが実体はタブ区切り(TSV)、文字コード UTF-16LE、改行 CRLF、各値はダブルクォートで囲まれる**
-- 9列: `要素ID / 項目名 / コンテキストID / 相対年度 / 連結・個別 / 期間・時点 / ユニットID / 単位 / 値`
-- 空白 = 日本語名未定義、`-` = 値が0またはユニット未設定。**この2つを区別して保存する**（`-` は文字列 `-` のまま、空白は NULL）
-- 値は最大30,000文字で切り詰められている場合がある
-- 全要素を保存するとレコード数が膨大になるため、**保存対象の要素IDをホワイトリストで絞る**
-  - 初期セット: 売上高、営業利益、経常利益、当期純利益、総資産、純資産、自己資本比率、1株当たり当期純利益、営業活動によるキャッシュ・フロー
-  - ホワイトリストは `app/disclosures.py` の定数で管理し、変更時は当該銘柄の再パースで反映できるようにする
-
-#### 2.4.7 ローカル保存
-
-    data/disclosures/<symbol>/<docID>/
-    ├── meta.json        documents.json の該当行をそのまま保存
-    ├── document.pdf     type=2（取得した場合のみ）
-    └── xbrl_csv/        type=5 の ZIP を展開したもの（分類 A のみ）
-
-- `disclosures.body_path` にこのディレクトリの相対パスを保存する
-- 銘柄削除時は `ON DELETE CASCADE` で DB 行が消える。**ディレクトリも併せて削除する**
+- **四半期報告書（140/150）は 2024年4月1日以後に開始する四半期から廃止された。** 今後 EDINET に出る `report` は
+  有報と半期報の年2回で、提出は決算短信の数週間〜3か月後になる。**「決算」という語をラベルに使わない**（§2.5.3）
+- `withdrawalStatus != 0`（取下げ）の書類はイベント欄に「取下げ」として表示し、マーカーは出さない
+- 開示本文はローカル保存しない。イベント欄の「開く」は EDINET の書類閲覧ページを OS 既定のブラウザで開く
+  （URL 形式は P4-4 で確認。確認できない場合は `type=2` の PDF を一時ファイルに取得して開く方式に切り替え、本書を更新する）
 
 ### 2.5 チャート表示
 
@@ -259,70 +341,108 @@ EDINET API v2。キーは**クエリパラメータ `Subscription-Key`**（ヘ�
 
 既存のチップ切り替え（`web/js/chart.js` の `PANES`）に以下を追加する。
 
-| id | ラベル | 内容 |
-|---|---|---|
-| `short` | 空売り残高 | `short_totals.total_ratio`（%）の推移。副線として `holders`（報告者数） |
-| `taisyaku` | 貸借残高（日証金） | 貸付残高・借入残高の2本 |
+| id | ラベル | 内容 | 線種 |
+|---|---|---|---|
+| `short` | 空売り残高（0.5%以上の合計） | `short_totals.total_ratio`（%）の推移 | **階段**（`LWC.LineType.WithSteps`） |
+| `taisyaku` | 貸借取引残高（日証金） | 融資残高・貸株残高の2本 | **通常の折れ線。欠測で線を切る** |
 
-#### 2.5.2 欠損日の扱い
+#### 2.5.2 日付の整合と欠測の扱い
 
-需給データは日足の全営業日に値があるとは限らない（貸借銘柄でない、報告が無い日など）。
-
-- 値の無い日は **whitespace data**（`{ time: d }` のみ。`value` キーを持たせない）を入れて時間軸の連続性を保つ
-- **線形補間をしない。** `lineType: 2`（階段状）で描画し、次の報告まで値が据え置かれることを視覚的に表す
-- 値が1件も無い銘柄では、そのペインのチップを無効化し「データなし（貸借銘柄ではない可能性があります）」と表示
+- 需給データは**ローソク足に存在する日付だけ**を payload に載せる。足の無い日付を渡すと時間軸に空の列が増えるため、
+  `prices.date` に無い日の値は直前の足がある日に寄せず**捨てる**（空売り残高は次項の据え置きで吸収される）
+- 時間軸はローソク足が全営業日を持つので、需給シリーズ側に whitespace data を入れる必要は無い
+  （土台の `toSeries()` と同じく、値のある点だけを渡す）
+- **空売り残高合計**は「報告が出た日にだけ変わる量」なので階段で描く。
+  最後の報告日から最新の足までは**最後の値を据え置いた点を1つ足して**線を延ばす
+- **線種は必ず `LWC.LineType.WithSteps` と定数で書く。** 数値リテラルを使わない
+  （`1` が階段、`2` は**曲線**。版 1.0 は `lineType: 2` と誤記していた）
+- **貸借取引残高**は日次データなので、欠測は「据え置き」ではなく「不明」である。
+  連続して取得できた区間ごとに線を分け、欠測日をまたいで結ばない
+  （実装は区間ごとにシリーズを分割するか、欠測直後の点に透明色を指定する。P3-3 で決める）。
+  区間の判定は「ローソク足の並びで隣り合う日にデータがあるか」で行う
+- 値が1件も無い銘柄では、そのペインのチップを無効化し理由を表示する
+  （空売り: 「0.5% 以上の報告なし、または未取得」／ 貸借: 「貸借銘柄ではない、または未取得」）
 
 #### 2.5.3 イベントマーカー
 
-`LWC.createSeriesMarkers(candleSeries, markers)` でローソク足に付ける。
-既存の売買シグナルのマーカーと**同一の配列にマージして1回で設定する**（複数回呼ぶと上書きされるため）。
+ローソク足に `LWC.createSeriesMarkers(candleSeries, markers)` で付ける。
 
-| 分類 | 対象 docTypeCode | 位置 | 形状 | 色 |
+- 既存の売買シグナルのマーカーと**同一の配列にマージして1回で設定する**。
+  理由: `createSeriesMarkers` は呼ぶたびに別のプリミティブを追加するので複数回呼んでも消えはしないが、
+  別々に設定すると同じ足・同じ位置での重なり回避が効かない（版 1.0 の「上書きされる」は誤り）
+- 配列は **`time` の昇順にソート**する
+- 開示マーカーの表示は OVERLAYS に追加するチップ `disclosures`（ラベル「開示」、既定 ON）で切り替える。
+  **シグナルのチップが OFF でも開示マーカーは出る**（土台はマーカー生成が `overlays.has("signals")` の中にあるので、配列の構築を分岐の外に出す）
+- 各マーカーに **`id`**（`ev:<日付>`）を付ける。クリック・ホバーの検出に使う（§2.6）
+
+| category | 位置 | 形状 | 色 | テキスト |
 |---|---|---|---|---|
-| 決算系 | 120/130, 140/150, 160/170 | aboveBar | circle | 青系 |
-| 需給系 | 350/360, 220/230, 240〜320 | belowBar | arrowUp | 橙系 |
-| その他 | 180/190, 030/040, 235/236 ほか | aboveBar | square | 灰系 |
+| `report` | aboveBar | circle | 青系 | `有報` / `半期` / `四半期` |
+| `supply` | belowBar | arrowUp | 橙系 | `大量保有` / `自己株` / `TOB` |
+| `other` | aboveBar | square | 灰系 | `臨報` ほか |
 
-- 同一日に複数の開示がある場合は**1つのマーカーにまとめ**、テキストに件数を付す（例: `開示3件`）
-- マーカーの `time` は `submitDateTime` の日付部分。**非営業日に提出された開示は直後の営業日に寄せる**（その日のローソク足が存在しないと描画されないため）。寄せた事実はイベント欄に原日付として表示する
+- 同一日に複数の開示がある場合は**1つのマーカーにまとめ**、テキストに件数を付す（例: `開示3件`）。
+  色と形は `supply > report > other` の優先順で決める。明細はイベント欄に全件出るので情報は失われない
+- **マーカーの日付は DB に持たず、表示のたびに決める。** `submit_at` の日付以降で、**最初に足が存在する日**
+  （`prices.date` の昇順リストへの二分探索）に付ける。祝日カレンダーは持たない
+  - 該当する足がまだ無い開示（週末提出で翌営業日の株価が未取得など）はマーカーを出さず、イベント欄にだけ出す
+  - 寄せた場合、イベント欄には原提出日時を表示する
+- EDINET の提出は引け後が多い。イベント欄には提出**時刻**も出し、提出日の値動きの原因と誤読されないようにする
 
 ### 2.6 イベント欄
 
-チャート直下に開示イベントの一覧を置く。
+開示イベントの一覧。
 
+- **配置はダッシュボード右カラム（テクニカル判定・シグナルと同じ列）**とし、チャートの下には置かない。
+  チャートのコンテナ高は `400 + ペイン数 × 125px` で縦に伸びるため、下に置くとローソク足から離れて連動の意味が薄れる
 - **チャートの表示範囲と連動**する。`chart.timeScale().subscribeVisibleTimeRangeChange()` で範囲を取得し、範囲内のイベントだけを表示
-- 各行: 日付 / 種別ラベル / 概要（`docDescription`）/ 提出事由（`currentReportReason`、臨時報告書のみ）
-- 行をクリック → 該当日にチャートをスクロール（`timeScale().scrollToPosition()` または `setVisibleRange()`）
-- 文書を保存済みなら「開く」ボタンで OS 既定アプリに渡す。未取得なら「取得」ボタンで PDF をダウンロード
-- **マーカーにはヒットテストAPIが無い**ため、マーカーのクリック検出は `chart.subscribeClick` の `param.time` から自前のイベント配列を引く方式で実装する
-- DB 化できない開示（分類 B / C）も**すべてイベント欄に出す**
+- チップ切り替えのたびにチャートは破棄・再生成される。購読の張り直しと表示範囲の引き継ぎは
+  `StockChart.render()` の戻り値 API（`onVisibleRangeChange(cb)` / `scrollToDate(date)` など）経由で行う
+- 各行: 提出日時 / 種別ラベル / 概要（`docDescription`）/ 提出事由（`currentReportReason`、臨時報告書のみ）/
+  関係（`role` が `issuer`・`subject` のときは提出者名も）
+- 行をクリック → 該当日にチャートをスクロール
+- 「開く」ボタン → EDINET の閲覧ページを既定ブラウザで開く（§2.4.6）
+- マーカーのクリックは `chart.subscribeClick` の **`param.hoveredObjectId`**（マーカーの `id`）で検出し、
+  イベント欄の該当行へスクロールして強調表示する（版 1.0 の「ヒットテスト API が無い」は誤り）
+- 冒頭に注記: 「決算短信・業績修正（TDnet）は対象外。決算発表日は表示されません」
 
 ### 2.7 AI分析レポート
 
 #### 2.7.1 実行
 
-- **手動実行のみ。** 自動実行・定期実行はしない
+- **手動実行のみ。** 自動実行・定期実行はしない（起動時の自動更新にも含めない）
 - 対象は1銘柄。期間（直近20/60/120日）を選択
 - 実行前に確認ダイアログで以下を表示する:
   - 使用モデル名
   - `count_tokens` による**入力トークンの見積り**
-  - 本日の残量（RPD 残り・TPM 残り）
-  - 送信されるデータの種別（§7.2 の一覧）
-- 確認後に実行。実行中は進捗を表示
+  - 本日の残量（RPD 残り・TPM 残り）。「自前カウンタによる見積りであり、同じプロジェクトを他で使っていると実際はこれより少ない」と添える
+  - 送信されるデータの種別（§2.7.3 の一覧）
+- 確認後にジョブとして実行（§2.8.1）。進捗は「送信中」「検証中」「再依頼 n/2」「レポート生成中」
 
 #### 2.7.2 クォータ管理
 
 - `ai_usage` に**太平洋時間（`zoneinfo.ZoneInfo("America/Los_Angeles")`）基準の日付**で積算する
   - 理由: RPD のリセットが太平洋時間の深夜0時。夏時間の切替があるため固定オフセットを使わない
-- **送信前ガード**: 見積りトークン数とリトライ想定分を加えた上で、
-  `gemini_rpd` / `gemini_tpm` の残量を超える場合は**送信せずに中止**する
+  - Windows の Python は tz データベースを持たないため、`tzdata` を依存に明示する
+- **リクエストは送信を試みる直前に加算する**（成功時ではない。失敗したリクエストも枠を消費するため）。トークンは応答後に加算
+- 自前カウンタは**下限の見積り**である（上限はプロジェクト単位で、他ツールの使用分は見えない）
+- **送信前ガード**: 次の送信1回分について `gemini_rpd` / `gemini_tpm` の残量を確認し、足りなければ**送信せずに中止**する。
+  ガードは初回だけでなく**再依頼のたびに直前で再評価**する（事前にリトライ分をまとめて確保しない）
   - メッセージ: 「本日の無料枠を使い切りました。太平洋時間0時にリセットされます（日本時間の当日16時または17時）」
 - `gemini_rpm` は直近60秒のリクエスト数をメモリ上で数え、超える場合は待機する
-- 429 / `RESOURCE_EXHAUSTED`（`google.genai.errors.ClientError`）を受けた場合:
-  - レスポンスから RPM 超過か RPD 超過かは**判別できない**
-  - 安全側に倒し、**その日はそのモデルへの送信を打ち切る**。`ai_usage` に打ち切りフラグを立てる
-- SDK 組み込みの自動リトライ（最大4回・初回約1秒・最大60秒）が動くため、
-  アプリ側で二重にリトライしない
+- **SDK のリトライ機能（`HttpRetryOptions`）は設定しない。** `google-genai` は既定では再試行しない。
+  有効にすると SDK が 429 のたびに黙って最大5回送信し、自前カウンタと実数がずれる。再送はすべてアプリ側で行い、1回ごとに数える
+- 429 / `RESOURCE_EXHAUSTED`（`google.genai.errors.ClientError`）を受けた場合は、エラー詳細の
+  `google.rpc.QuotaFailure` の `violations[].quotaId` と `google.rpc.RetryInfo.retryDelay` を読む:
+
+| 判定 | 挙動 |
+|---|---|
+| `quotaId` に `PerDay` を含む | その日はそのモデルへの送信を打ち切る（`ai_usage.exhausted = 1`） |
+| `quotaId` に `PerMinute` を含む | `retryDelay`（無ければ60秒）待って**1回だけ**再送。再び 429 なら中止（打ち切りフラグは立てない） |
+| 判別できない | 安全側に倒して打ち切る |
+
+  - この形式は公式に保証されたものではない。P6-1 で実物を1回採取して確認し、フィールドの読み取りは欠損に耐える実装にする
+  - 誤判定に備え、設定タブに**打ち切りフラグの手動解除**を置く
 
 #### 2.7.3 送信データ（厳密に定義する）
 
@@ -333,65 +453,138 @@ EDINET API v2。キーは**クエリパラメータ `Subscription-Key`**（ヘ�
 | 銘柄情報 | 証券コード、銘柄名、市場、通貨 |
 | 株価 | 直近N日の OHLCV（CSVブロック形式） |
 | テクニカル指標 | 直近N日の各指標値（CSVブロック形式）、最新の判定（`evaluate_latest`）、期間内のシグナル（`detect_signals`） |
-| 開示 | `disclosures` の日付・種別ラベル・`docDescription`・`currentReportReason`。**本文は送らない** |
-| 財務数値 | `disclosure_facts` のうちホワイトリスト要素の直近値 |
+| 開示 | `disclosures` の提出日・種別ラベル・`docDescription`・`currentReportReason`・`role`。**本文は送らない** |
+| 前提の注記 | 「開示は EDINET の法定開示のみで、決算短信・業績修正は含まれない。一覧が空でも材料が無いことを意味しない」 |
 
 **送らないもの**
 
 - `short_positions` / `short_totals` / `margin_balances` の**すべて**
 - ユーザーの保有株数・取得単価・損益・口座情報（アプリが保持しない）
-- APIキー、ローカルパス、ユーザー名
+- APIキー、ローカルパス、ユーザー名、`scrape_contact`
+- チャートのスクリーンショット（需給ペインが写るため。レポートにも使わない）
 
 > **実装上の担保**
-> プロンプト組み立ては `app/ai/prompt.py` の単一関数に集約する。
-> この関数の引数に需給テーブルの値を渡せない型にし、
-> 「生成されたプロンプト文字列に需給データが含まれないこと」をテストで固定する（§10）。
+> - プロンプト組み立ては `app/ai/prompt.py` の単一関数に集約する。この関数は DB を直接触らず、
+>   **許可された読み取りメソッドだけを持つファサード**から作った凍結 dataclass（`PromptInput`）を受け取る
+> - `service.dashboard()` の payload（`chart.short` / `chart.taisyaku` を含む）を**プロンプトの材料に流用しない**
+> - `app/ai_export.py` を拡張するときも需給を足さない
+> - テストは**番兵値方式**（§10）: 需給3テーブルに現実にあり得ない値を入れ、初回プロンプト・再依頼プロンプト・
+>   レポート HTML のいずれにも現れないことを確認する。加えて `app/ai/` 配下のソースに
+>   `short_` `margin_` `taisyaku` `karauri` が出現しないことを検査する
 
 #### 2.7.4 構造化出力
 
 Gemini には **HTML を書かせない。** JSON で分析結果だけを返させ、HTML は Jinja2 で組み立てる。
 
-- SDK: `google-genai`（旧 `google-generativeai` は廃止済み）
+- SDK: `google-genai`
 - `response_mime_type="application/json"` + `response_schema=<Pydanticモデル>`
 - `temperature=0.1`
-- **Pydantic のフィールド定義順が出力順に反映される**ため、「結論 → 根拠」の順に定義する
+- Pydantic のフィールド定義順が出力順に反映される。**「根拠 → 結論」の順に定義する。**
+  先に結論を出力させると、後続の根拠が結論に合わせた後付けになるため。
+  **レポート上の表示順はテンプレート側で決める**（結論を先頭に表示してよい）
 
 スキーマ（`app/ai/schema.py`）:
 
 ```python
 class SectionAnalysis(BaseModel):
-    assessment: str            # その観点での評価
-    evidence: list[str]        # 根拠（データ由来の事実のみ）
+    evidence: list[str] = Field(max_length=6)   # 根拠（データ由来の事実のみ）。先に書かせる
+    assessment: str                             # その観点での評価
 
 class AnalysisReport(BaseModel):
-    verdict: Literal["bullish", "bearish", "neutral"]
-    confidence: int            # 0-100
-    summary: str               # 3行以内の総括
     technical: SectionAnalysis
     disclosure: SectionAnalysis
-    risks: list[str]
-    watch_points: list[str]
+    risks: list[str] = Field(max_length=5)
+    watch_points: list[str] = Field(max_length=5)
+    verdict: Literal["bullish", "bearish", "neutral"]
+    confidence: Literal["low", "medium", "high"]
+    summary: str               # 3行以内の総括
 ```
+
+- リストに件数上限を置くのは、際限ない列挙で出力枠を使い切らせないため
+- `confidence` は較正されていない自己申告なので、数値ではなく3段階にする
 
 #### 2.7.5 検証と再依頼
 
-1. `finish_reason` を確認する。`"MAX_TOKENS"` なら**パースを試みずに**期間を縮めて再実行を促す
+1. `finish_reason` を確認する。`"MAX_TOKENS"` なら**パースを試みずに**中止し、
+   「出力トークン上限を上げるか、thinking の予算を下げてください」と案内する
+   （入力期間を縮めても出力量は変わらないので、期間短縮は案内しない。分割生成もしない）
 2. `AnalysisReport.model_validate_json(response.text)` を試みる
 3. 失敗したら、**バリデーションエラーの本文をプロンプトに添えて再依頼**する
    - 追加文: 「前回の出力は次の検証エラーで失敗した: {エラー}。スキーマに厳密に従って再生成せよ」
-4. 再依頼は**最大2回**。3回目の失敗で中止し、生のレスポンスを `data/logs/` に保存してユーザーに通知する
-5. 再依頼もクォータを消費する。§2.7.2 の事前見積りにリトライ2回分を含める
+4. 再依頼は**最大2回**。毎回 §2.7.2 のガードを通す。3回目の失敗、またはガードで止まった場合は中止し、
+   生のレスポンスを `data/logs/` に保存してユーザーに通知する
 
 #### 2.7.6 レポート出力
 
 - Jinja2 テンプレート（`templates/report.html.j2`）で**単一HTMLファイル**を生成
 - CSS は `<style>` にインライン。外部ファイル参照を作らない
-- 含める内容: 銘柄情報、生成日時、モデル名、AI の分析結果（スキーマの各項目）、
+- 含める内容: 銘柄情報、生成日時、モデル名、AI の分析結果（表示順は 総括・判定 → 各観点 → リスク → 注目点）、
   根拠となった指標値の表、開示一覧
-- **免責を必ず含める**: 本レポートは機械的な分析であり投資助言ではないこと、
-  AI の出力を検証していないこと、データの出典
+- **免責を必ず含める**: 本レポートは機械的な分析であり投資助言ではないこと、AI の出力を検証していないこと、
+  データの出典、**決算短信・業績修正は分析対象に含まれていないこと**
 - **需給データはレポートにも載せない**（AI が分析していないため、載せると分析対象だったと誤認させる）
 - 保存先 `data/reports/report_<symbol>_<YYYYmmdd_HHMMSS>.html`、`ai_reports` に記録
+
+### 2.8 ジョブ基盤と起動時の自動更新
+
+#### 2.8.1 ジョブ基盤（`app/jobs.py`）
+
+数十秒を超え得る処理は、ブロッキング API ではなくジョブとして実行する。
+pywebview は API 呼び出しごとに別スレッドで動くため、JS からのポーリングで進捗取得と中断ができる。
+
+| 種別 `kind` | 内容 |
+|---|---|
+| `auto_update` | 起動時の自動更新（§2.8.2） |
+| `short_all` | 空売り残高の一括取得 |
+| `disclosures` | 開示の取得（初回は数分かかる） |
+| `ai_analyze` | AI 分析 |
+
+- `start_job(kind, params)` はワーカースレッドを起動して `job_id` を即座に返す
+- `job_status(job_id)` は `{state, progress: {current, total, label}, result, error}` を返す。
+  `state` は `running` / `done` / `error` / `cancelled`
+- `cancel_job(job_id)` は中断フラグ（`threading.Event`）を立てる。ワーカーは**リクエストの合間**に確認して止まる。
+  リクエスト間の待機は `time.sleep` ではなく `Event.wait(秒)` で行い、中断に即応する
+- **同じ種別のジョブは同時に1つ**。実行中に同種を開始しようとしたらエラーを返す。
+  異なる種別が同じ外部ソースを使う場合の直列化は、§4.1 のソース別ロックが担う
+- **HTTP 待ちの間に DB の書き込みロックを保持しない。** 「取得 → パース → 短いトランザクションで保存」を銘柄／日付の単位で繰り返す
+  （`Database.write()` は接続を開いている間 `_write_lock` を保持するため）
+- 中断・エラーで終わっても、それまでに保存した分は保持する
+- 画面側は1秒間隔で `job_status` をポーリングし、進捗バーと中断ボタンを表示する。終了済みジョブの情報は一定数だけメモリに残す
+- 土台の `update` / `update_all`（ブロッキング）は変更しない。単一銘柄の空売り取得・日証金の取得のような1リクエストで終わる処理もブロッキングのままでよい
+- ジョブ内で発生する「ユーザーに伝えるべきエラー」は `ValueError` 系の独自例外（`app/errors.py` の `UserFacingError(ValueError)`）に統一する。
+  土台の `_response` デコレータが `ValueError` をそのままメッセージとして返すため、既存の規約に乗る
+
+#### 2.8.2 起動時の自動更新
+
+土台には登録銘柄を自動で更新する機能が無い（起動時に行うのは CSV・指標の再生成だけ）。
+**アプリを起動するたびに1回だけ、登録銘柄のデータを差分更新する。**
+
+**起動の流れ**
+
+1. ウィンドウを開き、保存済みデータで画面を表示する（**自動更新を待たない**。起動時間の要件 §8 は変えない）
+2. 画面側の初期化（`app.js` の `init()` → `refreshStocks()`）が終わったら、JS が `start_job('auto_update')` を呼ぶ
+   - Python の `main.py` からではなく JS から起動する。`dev_server.py` でも同じ経路で動き、テストもしやすい
+   - `auto_update_on_start` が false、または登録銘柄が0件なら何もしない
+3. バックグラウンドで以下を**この順に**実行する。画面は操作可能なまま、ヘッダのステータス欄に進捗（例: 「株価を更新中 3/12」）と中断ボタンを出す
+
+| 順 | 対象 | 内容 | スキップ条件 |
+|---|---|---|---|
+| 1 | 株価（yfinance） | 登録銘柄を直列に `service.update(symbol)`。銘柄間は1秒空ける | その銘柄の `fetch_log(source='yahoo', key=symbol)` が `auto_update_min_interval_min` 以内 |
+| 2 | 貸借取引残高（日証金） | `zandaka.csv` を1回取得（§2.3） | 国内銘柄が1件も無い／`fetch_log(taisyaku)` が同分数以内 |
+| 3 | 開示（EDINET） | 確定済みでない日付を取得（§2.4.4）。通常は数リクエスト | APIキー未設定（エラーにしない） |
+| 4 | 空売り残高（karauri.net） | `short_recheck_hours` を過ぎた銘柄だけ取得（§2.2.4） | **`auto_update_short` が false（既定）**／`scrape_contact` 未設定 |
+
+- 株価の取得済み判定に `stocks.last_updated` を使わない。起動時の CSV・指標の再生成（`rebuild_all`）でも更新されるため、
+  取得の記録は `fetch_log(source='yahoo')` に分けて持つ。手動の `update` / `update_all` でも同じ記録を更新する
+- 初回起動などで EDINET の取得が長くなる場合（未取得日が30日を超える）は、自動更新では**直近30日分だけ**を取り、
+  残りは「開示を取得」ボタン（`disclosures` ジョブ）に委ねる。ステータス欄にその旨を出す
+- **失敗してもダイアログで止めない。** ソースごとに最初の通信失敗でそのソースを打ち切って次へ進み（オフラインで全銘柄分のタイムアウトを待たない）、
+  最後に結果をトーストとステータス欄にまとめて出す（例: 「株価 12件更新／日証金 取得済み／EDINET 3日分／空売り スキップ（設定オフ）」）。詳細はログ
+- 完了したら銘柄一覧を再読込し、ダッシュボードで表示中の銘柄が更新されていれば再描画する
+- 手動操作との競合: 銘柄単位の更新は土台の `_symbol_locks` で直列化される。
+  自動更新の実行中に同じソースの手動取得を始めた場合は、§4.1 のソース別ロックで順番待ちになる
+- **Gemini は自動更新の対象外**（§2.7.1）
+- 自動更新は**起動時の1回だけ**。アプリを開き続けても再実行しない（常駐ポーリングをしない方針 §1.3 を保つ）
 
 ---
 
@@ -400,23 +593,24 @@ class AnalysisReport(BaseModel):
 既存の `stocks` / `prices` / `indicators` は変更しない。以下を追加する。
 
 ```sql
--- 設定（APIキー等）
+-- 設定（APIキーは含めない。キーは OS の資格情報ストアに置く §2.1.2）
 CREATE TABLE settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
 
--- 空売り残高（報告者別・karauri.net 由来）
+-- 空売り残高（報告者別・karauri.net 由来。銘柄単位で全置換）
 CREATE TABLE short_positions (
     symbol      TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
     calc_date   TEXT NOT NULL,
-    holder      TEXT NOT NULL,
+    holder_id   TEXT NOT NULL,   -- リンクの f= の値。同一性の判定に使う
+    holder      TEXT NOT NULL,   -- 表示用の名称
     ratio       REAL,
     ratio_delta REAL,
     quantity    INTEGER,
     qty_delta   INTEGER,
     note        TEXT,
-    PRIMARY KEY (symbol, calc_date, holder)
+    PRIMARY KEY (symbol, calc_date, holder_id)
 );
 CREATE INDEX idx_short_positions_symbol_date ON short_positions(symbol, calc_date);
 
@@ -430,66 +624,67 @@ CREATE TABLE short_totals (
     PRIMARY KEY (symbol, date)
 );
 
--- 貸借取引残高（日証金 zandaka.csv 由来）
--- ※ カラムは暫定。実ファイル確認後に確定する（PLAN P2-3）
+-- 貸借取引残高（日証金 zandaka.csv 由来・蓄積型）
+-- ※ 残高系カラムの最終形は P2-3 でヘッダを確認して確定する
 CREATE TABLE margin_balances (
-    symbol         TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
-    date           TEXT NOT NULL,
-    loan_balance   INTEGER,   -- 貸付（売り）残高
-    borrow_balance INTEGER,   -- 借入（買い）残高
-    loan_new       INTEGER,   -- 新規貸付
-    borrow_new     INTEGER,   -- 新規借入
-    ratio          REAL,      -- 倍率
+    symbol        TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+    date          TEXT NOT NULL,   -- 申込日（YYYY-MM-DD に正規化）
+    settle_date   TEXT,            -- 決済日
+    kind          TEXT NOT NULL,   -- 'prelim'（速報）| 'final'（確報）。確報は速報を上書きする
+    yushi_new     INTEGER,         -- 融資 新規（株）
+    yushi_repay   INTEGER,         -- 融資 返済
+    yushi_balance INTEGER,         -- 融資 残高（買い方向）
+    kashi_new     INTEGER,         -- 貸株 新規
+    kashi_repay   INTEGER,         -- 貸株 返済
+    kashi_balance INTEGER,         -- 貸株 残高（売り方向）
+    net_balance   INTEGER,         -- 差引残高
+    fetched_at    TEXT NOT NULL,
     PRIMARY KEY (symbol, date)
 );
 
--- 開示メタデータ（EDINET）
+-- EDINET コードリスト（証券コード → EDINET コード）
+CREATE TABLE edinet_codes (
+    edinet_code TEXT PRIMARY KEY,
+    sec_code    TEXT,            -- 5桁
+    name        TEXT
+);
+CREATE INDEX idx_edinet_codes_sec ON edinet_codes(sec_code);
+
+-- 開示メタデータ（EDINET）。書類そのもの。銘柄との関係は disclosure_links
 CREATE TABLE disclosures (
-    doc_id         TEXT PRIMARY KEY,
-    symbol         TEXT REFERENCES stocks(symbol) ON DELETE CASCADE,
-    sec_code       TEXT,
-    edinet_code    TEXT,
-    filer_name     TEXT,
-    doc_type_code  TEXT NOT NULL,
-    form_code      TEXT,
-    ordinance_code TEXT,
-    description    TEXT,
-    reason         TEXT,
-    period_start   TEXT,
-    period_end     TEXT,
-    submit_at      TEXT NOT NULL,
-    event_date     TEXT NOT NULL,  -- チャート表示用。非営業日は直後の営業日に寄せた日付
-    parent_doc_id  TEXT,
-    xbrl_flag      INTEGER,
-    pdf_flag       INTEGER,
-    csv_flag       INTEGER,
-    withdrawal     INTEGER,
-    disclosure     INTEGER,
-    category       TEXT NOT NULL,  -- 'A' | 'B' | 'C'（§2.4.5）
-    body_path      TEXT,
-    fetched_at     TEXT
-);
-CREATE INDEX idx_disclosures_symbol_date ON disclosures(symbol, event_date);
-
--- XBRL 由来の財務数値（分類 A のみ・ホワイトリスト要素のみ）
-CREATE TABLE disclosure_facts (
-    doc_id      TEXT NOT NULL REFERENCES disclosures(doc_id) ON DELETE CASCADE,
-    element_id  TEXT NOT NULL,
-    context_id  TEXT NOT NULL,
-    label       TEXT,
-    rel_period  TEXT,
-    scope       TEXT,        -- 連結 / 個別 / その他
-    period_type TEXT,        -- 期間 / 時点
-    unit_id     TEXT,
-    unit        TEXT,
-    value       TEXT,        -- 数値も文字列も来るため TEXT
-    PRIMARY KEY (doc_id, element_id, context_id)
+    doc_id              TEXT PRIMARY KEY,
+    edinet_code         TEXT,           -- 提出者
+    sec_code            TEXT,           -- 提出者の証券コード（5桁）
+    filer_name          TEXT,
+    issuer_edinet_code  TEXT,           -- 大量保有: 発行会社
+    subject_edinet_code TEXT,           -- 公開買付: 対象
+    doc_type_code       TEXT NOT NULL,
+    form_code           TEXT,
+    ordinance_code      TEXT,
+    description         TEXT,
+    reason              TEXT,           -- currentReportReason
+    period_start        TEXT,
+    period_end          TEXT,
+    submit_at           TEXT NOT NULL,  -- 提出日時。チャート上の日付は表示時に決める（§2.5.3）
+    parent_doc_id       TEXT,
+    withdrawal          INTEGER,
+    disclosure          INTEGER,
+    category            TEXT NOT NULL   -- 'report' | 'supply' | 'other'（§2.4.6）
 );
 
--- 取得済みの記録（差分取得用）
+-- 書類と登録銘柄の関係（1書類が複数銘柄に関係し得る）
+CREATE TABLE disclosure_links (
+    doc_id TEXT NOT NULL REFERENCES disclosures(doc_id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+    role   TEXT NOT NULL,            -- 'filer' | 'issuer' | 'subject'
+    PRIMARY KEY (doc_id, symbol, role)
+);
+CREATE INDEX idx_disclosure_links_symbol ON disclosure_links(symbol);
+
+-- 取得の記録（差分取得・スキップ判定用）
 CREATE TABLE fetch_log (
-    source     TEXT NOT NULL,   -- 'edinet' | 'taisyaku' | 'karauri'
-    key        TEXT NOT NULL,   -- 日付 or 銘柄シンボル
+    source     TEXT NOT NULL,   -- 'yahoo' | 'edinet' | 'edinet_codes' | 'taisyaku' | 'karauri'
+    key        TEXT NOT NULL,   -- yahoo/karauri: 銘柄シンボル、edinet: 日付、taisyaku: 'zandaka'、edinet_codes: 'list'
     fetched_at TEXT NOT NULL,
     result     TEXT,            -- 'ok' | 'empty' | 'error:<理由>'
     PRIMARY KEY (source, key)
@@ -499,10 +694,10 @@ CREATE TABLE fetch_log (
 CREATE TABLE ai_usage (
     date_pt    TEXT NOT NULL,   -- 太平洋時間基準の日付
     model      TEXT NOT NULL,
-    requests   INTEGER NOT NULL DEFAULT 0,
+    requests   INTEGER NOT NULL DEFAULT 0,   -- 送信を試みた回数（失敗も含む）
     in_tokens  INTEGER NOT NULL DEFAULT 0,
     out_tokens INTEGER NOT NULL DEFAULT 0,
-    exhausted  INTEGER NOT NULL DEFAULT 0,  -- 429 を受けて打ち切った
+    exhausted  INTEGER NOT NULL DEFAULT 0,   -- 日次上限の 429 を受けて打ち切った（手動解除可）
     PRIMARY KEY (date_pt, model)
 );
 
@@ -518,16 +713,21 @@ CREATE TABLE ai_reports (
 );
 ```
 
+- 銘柄を削除すると `disclosure_links` が CASCADE で消える。どの銘柄にも紐づかなくなった `disclosures` の行は削除時に掃除する。
+  **`fetch_log` と `data/edinet_cache/` は消さない**（再登録時にキャッシュから復元できる §2.4.2）
+- EDINET の「取得済み」は日付単位だが、銘柄の紐付けはキャッシュの再走査で行うので、銘柄の追加・削除と矛盾しない
+
 ### 3.1 マイグレーション方針
 
 土台は `indicators` のカラム構成が変わったらテーブルを作り直し、株価から再計算する方式をとっている。
-新テーブルは**再取得コストが高い**ため、同じ方式は使えない。
+新テーブルは**再取得コストが高い**（貸借取引残高に至っては**再取得できない**）ため、同じ方式は使えない。
 
 - `CREATE TABLE IF NOT EXISTS` で追加する
 - 既存 DB への追加カラムは `PRAGMA table_info` で確認し `ALTER TABLE ADD COLUMN` で足す
 - `schema_version` を `settings` に持ち、バージョンごとの移行処理を関数で持つ
-- `short_totals` と `disclosure_facts` は元データ（`short_positions` / ローカル保存した XBRL CSV）から
-  再生成できるため、構成変更時は再生成でよい
+- 元データから再生成できるものは構成変更時に再生成でよい:
+  `short_totals` ← `short_positions` ／ `disclosures`・`disclosure_links` ← `data/edinet_cache/`
+- **`margin_balances` は決して DROP しない**
 
 ---
 
@@ -535,13 +735,15 @@ CREATE TABLE ai_reports (
 
 ### 4.1 共通 HTTP クライアント（`app/sources/base.py`）
 
-すべての外部取得はこのクライアントを経由する。
+EDINET・日証金・karauri.net への取得はこのクライアントを経由する（yfinance は土台の `fetcher.py` のまま）。
 
-- ソースごとに**最小リクエスト間隔**を持ち、直前のリクエストからの経過時間で待機する
+- ソースごとに**最小リクエスト間隔**を持ち、直前のリクエストからの経過時間で待機する。
+  待機は中断フラグを受け取れる形にする（`Event.wait`）
 - 同時実行を防ぐためソースごとにロックを持つ
 - User-Agent を設定する。ソースごとに上書き可
 - タイムアウト: 接続10秒 / 読み取り30秒
-- リトライ: 429・5xx に対して指数バックオフ（1s → 2s → 4s、最大3回）。4xx（429を除く）は即座に失敗
+- リトライ: 429・5xx に対して指数バックオフ（最大3回）。**待機時間は `max(バックオフ, ソースの最小間隔)`**。
+  4xx（429を除く）は即座に失敗。**karauri は 403・429 をリトライしない**（§2.2.4）
 - **ログにクエリパラメータの APIキーを出力しない**
 
 | ソース | 最小間隔 |
@@ -561,60 +763,66 @@ CREATE TABLE ai_reports (
 
 | メソッド | 変更 |
 |---|---|
-| `dashboard(symbol)` | 戻り値に `chart.short` / `chart.taisyaku` / `events` を追加 |
+| `dashboard(symbol)` | 戻り値に `chart.short` / `chart.taisyaku` / `events` を追加。`events` は足のある日付に寄せた `marker_date` を含む |
+| `register(...)` | 登録後に EDINET キャッシュを再走査して開示を埋める（API は呼ばない） |
+| `update` / `update_all` | `fetch_log(source='yahoo')` を更新する |
 
 **新規**
 
 | メソッド | 引数 | 戻り値 |
 |---|---|---|
-| `get_settings()` | — | 設定値（APIキーはマスク済み） |
+| `get_settings()` | — | 設定値（APIキーはマスク済み）と警告（同期フォルダ配下など） |
 | `save_settings(values)` | dict | 保存後の設定値 |
-| `test_connection(target)` | `'edinet'｜'gemini'` | 疎通結果 |
-| `fetch_short(symbol)` | — | 取得件数・最新計算日 |
-| `fetch_short_all()` | — | 銘柄ごとの結果・スキップ理由 |
-| `estimate_short_all()` | — | 対象銘柄数と所要時間の見積り（確認ダイアログ用） |
-| `fetch_taisyaku()` | — | 取得した日付と反映銘柄数 |
-| `fetch_disclosures(symbol=None)` | — | 取得件数・分類別内訳 |
-| `get_disclosure(doc_id)` | — | メタデータと `disclosure_facts` |
-| `fetch_disclosure_body(doc_id)` | — | 保存先パス |
-| `open_disclosure(doc_id)` | — | OS既定アプリで開く |
+| `test_connection(target)` | `'edinet'｜'gemini'` | 疎通結果（各クライアント完成後に実装） |
+| `start_job(kind, params=None)` | §2.8.1 の種別 | `job_id` |
+| `job_status(job_id)` | — | 状態・進捗・結果 |
+| `cancel_job(job_id)` | — | 受付結果 |
+| `active_jobs()` | — | 実行中ジョブの一覧（画面再読込時の復帰用） |
+| `estimate_short_all()` | — | 対象銘柄数・スキップ数・所要時間の見積り（確認ダイアログ用） |
+| `fetch_short(symbol)` | — | 取得件数・最新計算日（単一銘柄・ブロッキング） |
+| `fetch_taisyaku()` | — | 取得した申込日・区分・反映銘柄数（ブロッキング） |
+| `get_disclosures(symbol)` | — | 開示一覧 |
+| `open_disclosure(doc_id)` | — | EDINET の閲覧ページを既定ブラウザで開く |
 | `ai_quota()` | — | モデル・本日の使用量・残量・打ち切りフラグ |
+| `ai_reset_exhausted()` | — | 打ち切りフラグの手動解除 |
 | `ai_estimate(symbol, days)` | — | 入力トークン見積り・実行可否・不可の理由 |
-| `ai_analyze(symbol, days)` | — | レポートのパスと使用トークン |
 | `list_reports()` | — | 生成済みレポート一覧 |
 | `open_report(report_id)` | — | OS既定アプリで開く |
 
-長時間かかる処理（`fetch_short_all` / `fetch_disclosures` / `ai_analyze`）は
-土台の `update_all` と同じくブロッキングで実装し、画面側で進捗表示とキャンセル不可の旨を示す。
+一括の空売り取得・開示取得・AI 分析・自動更新は `start_job` 経由で実行する（個別メソッドは設けない）。
 
 ---
 
 ## 5. ファイル構成
 
 ```
+CLAUDE.md                [新] セッション開始時の指示（PLAN を読む・不変条件）
 main.py                  起動（変更: 新サービスの組み立て）
-dev_server.py            開発用サーバー（変更なし）
+dev_server.py            開発用サーバー（変更: 新サービスの組み立てのみ。API はリフレクションで公開されるので追加作業なし）
 app/
 ├── api.py               JS 公開 API（拡張）
-├── service.py           株価・指標（既存）
+├── service.py           株価・指標（既存。fetch_log の記録を追加）
 ├── fetcher.py           yfinance（既存）
 ├── indicators.py        指標計算（既存・変更なし）
 ├── database.py          SQLite（拡張）
 ├── csv_export.py        閲覧用CSV（既存）
-├── ai_export.py         AI向けデータ整形（流用・拡張）
+├── ai_export.py         AI向けデータ整形（既存。需給を足さない）
 ├── config.py            パス・定数（拡張）
-├── settings.py          [新] 設定の読み書き・APIキー管理
+├── errors.py            [新] UserFacingError
+├── settings.py          [新] 設定の読み書き・APIキー管理（keyring）
+├── jobs.py              [新] ジョブ基盤（§2.8.1）
+├── autoupdate.py        [新] 起動時の自動更新（§2.8.2）
 ├── sources/             [新]
 │   ├── __init__.py
 │   ├── base.py            間隔制御つきHTTPクライアント
 │   ├── karauri.py         空売り残高
 │   ├── taisyaku.py        貸借取引残高
-│   └── edinet.py          EDINET API v2
-├── disclosures.py       [新] 分類・XBRL CSV パース・ローカル保存
-├── events.py            [新] disclosures → チャートイベント変換
+│   └── edinet.py          EDINET API v2・コードリスト・日次キャッシュ
+├── disclosures.py       [新] 突合・分類・キャッシュ再走査
+├── events.py            [新] disclosures → チャートイベント変換（足のある日付への寄せ）
 └── ai/                  [新]
     ├── __init__.py
-    ├── client.py          google-genai ラッパ
+    ├── client.py          google-genai ラッパ（429 の判別・再送）
     ├── quota.py           ai_usage によるクォータ管理
     ├── schema.py          Pydantic 出力スキーマ
     ├── prompt.py          プロンプト組み立て（需給を含めない）
@@ -622,27 +830,30 @@ app/
 templates/               [新]
 └── report.html.j2
 web/
-├── index.html           タブ追加（設定・レポート）
+├── index.html           タブ追加（設定・レポート）、ステータス欄、イベント欄
 ├── css/style.css        拡張
-├── js/app.js            画面制御（拡張）
-├── js/chart.js          ペイン・マーカー・イベント欄（拡張）
+├── js/app.js            画面制御（拡張。起動時に auto_update ジョブを開始）
+├── js/jobs.js           [新] ジョブのポーリング・進捗・中断
+├── js/chart.js          ペイン・マーカー・イベント欄連動（拡張）
 ├── js/bridge.js         既存
 ├── js/format.js         既存
 └── vendor/
     ├── lightweight-charts.standalone.production.js
     ├── LICENSE-lightweight-charts.txt
-    └── NOTICE-lightweight-charts.txt   [新] Apache-2.0 §4(d) 対応
+    └── NOTICE-lightweight-charts.txt   [新] 配布元 v5.2.1 の NOTICE をそのまま同梱
 docs/
-├── RESEARCH.md
-├── DESIGN.md
-├── SPEC.md
-├── PLAN.md
-└── REVIEW_REQUEST.md
-tests/                   既存 + 新規
+tests/
+├── fixtures/            合成データのみ（§10.1）
+└── fixtures/real/       実データ置き場（.gitignore。存在するときだけ追加テストが走る）
 data/                    .gitignore 済み
+├── chronos.db
+├── csv/
+├── edinet_cache/        [新] documents.json の日次キャッシュ
+├── reports/             [新]
+└── logs/
 ```
 
-追加依存: `requests`, `beautifulsoup4`, `lxml`, `google-genai`, `pydantic`, `jinja2`
+追加依存: `requests`, `beautifulsoup4`, `lxml`, `keyring`, `tzdata`, `google-genai`, `pydantic`, `jinja2`
 
 ---
 
@@ -650,17 +861,24 @@ data/                    .gitignore 済み
 
 | 状況 | 挙動 |
 |---|---|
-| APIキー未設定 | 該当機能のボタンを無効化し、設定タブへの導線を出す |
+| APIキー未設定 | 該当機能のボタンを無効化し、設定タブへの導線を出す。自動更新では該当ソースを黙ってスキップ |
+| `keyring` が使えない | キーの保存を拒否し、環境変数での指定を案内 |
+| 起動時の自動更新でオフライン／通信失敗 | ダイアログを出さない。ソースごとに最初の失敗で打ち切り、結果をトーストとステータス欄にまとめる |
 | EDINET 401/403 | 「APIキーが正しくないか失効しています。2年間未使用のキーは自動削除されます」と表示 |
-| EDINET 429 | 指数バックオフ3回 → なお失敗ならバッチ中止し、取得済み分は保持 |
+| EDINET 429 | 指数バックオフ3回 → なお失敗ならジョブ中止し、取得済み分は保持 |
+| EDINET コードが解決できない銘柄 | エラーにせず `secCode` の補助突合にフォールバックし、イベント欄に「大量保有・公開買付は検出できません」と注記 |
 | karauri.net でテーブル構造が想定外 | **その銘柄の保存を行わず**エラー。「サイト構造が変わった可能性があります」と表示 |
-| karauri.net 連続3回失敗 | バッチ全体を中止 |
-| `scrape_contact` 未設定 | スクレイピングを実行せずエラー |
-| 日証金 CSV の列が想定外 | 保存せずエラー。列定義の確認を促す |
+| karauri.net 403 / 429 | **即座にバッチ全体を中止**。リトライしない |
+| karauri.net 5xx・タイムアウトが連続3回 | バッチ全体を中止 |
+| `scrape_contact` 未設定 | スクレイピングを実行せずエラー（自動更新ではスキップ） |
+| 日証金 CSV に必要な列が無い | 保存せずエラー。列定義の確認を促す |
+| 同種のジョブが実行中 | 開始を拒否し「実行中です」と表示 |
 | Gemini クォータ不足 | **送信せずに**中止。残量とリセット時刻を表示 |
-| Gemini 429 | その日そのモデルを打ち切り、`ai_usage.exhausted = 1` |
+| Gemini 429（日次） | その日そのモデルを打ち切り、`ai_usage.exhausted = 1`（手動解除可） |
+| Gemini 429（分次） | `retryDelay` 待って1回だけ再送 |
+| Gemini 429（判別不能） | 安全側で打ち切り |
 | Gemini スキーマ不一致 | 最大2回再依頼 → 失敗なら生レスポンスを `data/logs/` に保存して通知 |
-| `finish_reason == MAX_TOKENS` | パースせず、期間短縮を促す |
+| `finish_reason == MAX_TOKENS` | パースせず、出力上限の引き上げ／thinking 予算の引き下げを案内 |
 | 貸借銘柄でない | エラーにせず「データなし」と表示 |
 
 ログは土台と同じ `data/logs/app.log`（RotatingFileHandler）。**APIキーは必ずマスクする。**
@@ -674,9 +892,9 @@ data/                    .gitignore 済み
 | 対象 | 要件 |
 |---|---|
 | EDINET | 利用時は**出典を明記**する。レポートと画面に記載 |
-| JPX / 日証金 | 取得データを**再配布・公開しない**。エクスポート機能の対象に含めない |
-| karauri.net | robots.txt を尊重（対象外のクローラー名ではあるが、間隔・UA・直列アクセスを遵守） |
-| Yahoo (yfinance) | 非公式ライブラリであること、個人の分析用途に限ることを README に明記（土台が記載済み） |
+| JPX / 日証金 / karauri.net | 需給3テーブルのデータを**再配布・公開しない**。エクスポート・AI 送信・レポートの対象に含めない。**実データを Git にコミットしない**（§10.1） |
+| karauri.net | robots.txt を尊重（対象外のクローラー名ではあるが、間隔・UA・直列アクセスを遵守）。403/429 を受けたら即中止 |
+| Yahoo (yfinance) | 非公式ライブラリであること、個人の分析用途に限ることを README に明記（土台が記載済み）。自動更新でも直列・銘柄間1秒 |
 | TradingView Lightweight Charts | Apache-2.0 §4(d) に従い **NOTICE を同梱**。`attributionLogo` を無効化しない |
 
 ### 7.2 AI への送信データの境界
@@ -684,17 +902,15 @@ data/                    .gitignore 済み
 §2.7.3 に定義した通り。**需給データは送信しない。**
 
 根拠:
-- JPX 利用規約が生成AI による情報の学習・解析・生成利用に制限をかけている
-- Gemini 無料枠は入力が学習に使われ、人間のレビュアーが読む可能性がある（日本は EEA 等の優遇対象外）
+- JPX 利用規約が生成AI による情報の学習・解析・生成利用に制限をかけている（原文確認済み）
+- Gemini 無料枠は入力が製品改善に使われ、人間のレビュアーが読む可能性がある（日本は EEA 等の優遇対象外。原文確認済み）
 
-この2つが重なる領域を避ける。実装上はプロンプト組み立てを1関数に集約し、テストで固定する。
+この2つが重なる領域を避ける。担保の方法は §2.7.3 の「実装上の担保」と §10。
 
 ### 7.3 秘密情報
 
-- APIキーは `data/chronos.db` の `settings` テーブルに平文で保存する
-  （ローカル専用ツールであり、OS のユーザーアカウントで保護されることを前提とする）
-- `data/` は `.gitignore` 済み
-- ログ・エクスポート・レポートにキーを含めない
+- APIキーは **OS の資格情報ストア（`keyring`）に保存**する。DB・設定ファイル・ログ・エクスポート・レポートに含めない
+- `data/` は `.gitignore` 済み。クラウド同期フォルダ配下にある場合は設定タブで警告する（§2.1.3）
 - 画面ではマスク表示
 
 ---
@@ -703,11 +919,12 @@ data/                    .gitignore 済み
 
 | 項目 | 要件 |
 |---|---|
-| 起動時間 | 土台と同等（登録銘柄10件で3秒以内） |
+| 起動時間 | 土台と同等（登録銘柄10件で3秒以内）。**自動更新は画面表示後にバックグラウンドで走り、この時間に含めない** |
+| 自動更新中の操作性 | 画面は操作可能なまま。進捗表示と中断ができる |
 | チャート描画 | 日足3年分（約730本）＋需給2ペイン＋マーカー100件で1秒以内 |
-| 空売り残高の全銘柄取得 | 銘柄数 × `scrape_interval_sec` が所要時間。事前に見積りを表示する |
-| DB サイズ | 登録20銘柄・3年分で 100MB 以内（`disclosure_facts` をホワイトリストで絞ることで達成） |
-| オフライン | 取得済みデータの閲覧はネットワーク無しで動作する |
+| 空売り残高の一括取得 | 対象銘柄数 × `scrape_interval_sec` が所要時間。事前に見積りを表示し、途中で中断できる |
+| DB・キャッシュのサイズ | 登録20銘柄・3年分で DB は 50MB 以内。`edinet_cache` は gzip で1年あたり数十MB を目安とし、P4-2 で実測して本書に記す |
+| オフライン | 取得済みデータの閲覧はネットワーク無しで動作する。起動時の自動更新が失敗しても通常どおり使える |
 
 ---
 
@@ -717,13 +934,17 @@ data/                    .gitignore 済み
 
 | # | 項目 | 確定方法 | 関連タスク |
 |---|---|---|---|
-| 1 | 日証金 `zandaka.csv` の列構成・文字コード・日付書式 | 実ファイルを1件取得して確認 | PLAN P2-3 |
-| 2 | 日証金のファイル名規則（日付入りか固定名か）と過去分の取得可否 | ダウンロードページを確認 | PLAN P2-3 |
+| 1 | 日証金 `zandaka.csv` の全列名、速報/確報の区分値、区分列の意味 | `cp932` で実ファイルを読む | PLAN P2-3 |
+| 2 | 貸借取引残高の欠測を線で結ばない実装方法（シリーズ分割か透明色か） | 試作して決める | PLAN P3-3 |
 | 3 | Gemini 無料枠のモデル別 RPM/TPM/RPD | ユーザーが AI Studio で確認して設定画面に入力 | 設計で吸収済み |
-| 4 | `response.usage_metadata` の正確なフィールド名 | 実レスポンスを確認 | PLAN P6-1 |
+| 4 | `response.usage_metadata` の正確なフィールド名、429 エラー詳細の実際の構造、thinking 予算の指定方法 | 実レスポンスを1回採取 | PLAN P6-1 |
 | 5 | EDINET 利用規約の正確な文言 | 原文ページで再確認 | PLAN P4-1 |
-| 6 | JPX 銘柄別信用取引週末残高に CSV/Excel 版が無いか | 再確認（あれば貸借残高より優れた選択肢） | PLAN P2-3 |
-| 7 | `disclosure_facts` ホワイトリストの最終的な要素ID | 実際の XBRL CSV を見て確定 | PLAN P4-4 |
+| 6 | EDINET コードリスト CSV の文字コード・列構成 | 実ファイルを確認 | PLAN P4-1 |
+| 7 | EDINET 書類閲覧ページの URL 形式（docID から直接開けるか） | 実際に開いて確認。不可なら PDF 一時取得方式へ | PLAN P4-4 |
+| 8 | `edinet_cache` の実サイズ | 1か月分を取得して実測 | PLAN P4-2 |
+
+解消済み（版 1.0 → 1.1）: 日証金のファイル名規則と過去分の可否（固定名・最新のみ）、JPX 週次残高の採否（採用しない）、
+`disclosure_facts` のホワイトリスト（機能ごと §11 へ移動）。
 
 ---
 
@@ -731,22 +952,79 @@ data/                    .gitignore 済み
 
 土台の方式（pytest、実通信は環境変数でゲート）を踏襲する。
 
+### 10.1 フィクスチャの方針（規約遵守）
+
+- **第三者サイトの実データを Git にコミットしない。** karauri.net の HTML や日証金の CSV を複製してリポジトリに置くことは、
+  本書が掲げる「再配布しない」に反する
+- `tests/fixtures/` には**合成データ**だけを置く。構造（タグ・クラス名・ヘッダ・文字コード・区切り）は実物に合わせ、
+  値・機関名・銘柄は架空のものにする
+  - karauri: `<table id="sort" class="mtb2">` の骨格。備考なしの通常行、報告義務消失、再IN、名称が違い `holder_id` が同じ行、重複行を含める
+  - 日証金: `cp932`・実物と同じヘッダ・架空銘柄の数行。速報と確報の両方
+  - EDINET: `documents.json` と同じキー構成の合成 JSON（提出者一致／大量保有の issuer 一致／公開買付の subject 一致／
+    登録銘柄が**提出者**の大量保有（＝登録されないこと）／取下げ／`secCode` NULL）
+- 構造確認のために採取した実物は `tests/fixtures/real/` に置き、**`.gitignore` に追加**する。
+  実物が存在するときだけ走る追加テストを用意する（無ければ skip）
+
+### 10.2 テスト一覧
+
 | テスト | 内容 |
 |---|---|
-| `test_settings.py` | 設定の読み書き、マスク、環境変数の優先、ログにキーが出ないこと |
-| `test_sources_base.py` | リクエスト間隔が守られること、リトライ、UA、キーがログに出ないこと |
-| `test_karauri.py` | 保存した HTML フィクスチャのパース、列数違いでエラー、数値・NULL の扱い |
-| `test_short_totals.py` | §2.2.3 の合計算出（報告義務消失の除外、報告者ごとの最新採用） |
-| `test_taisyaku.py` | CSV フィクスチャのパース、貸借銘柄でない場合 |
-| `test_edinet.py` | `documents.json` フィクスチャの分類、`secCode` の5桁突合、取下げ書類の扱い |
-| `test_xbrl_csv.py` | UTF-16LE・TSV のパース、空白と `-` の区別、ホワイトリスト絞り込み |
-| `test_events.py` | 非営業日の繰り越し、同日複数開示のまとめ |
-| `test_ai_prompt.py` | **生成プロンプトに需給データが含まれないこと**（§7.2 の担保） |
-| `test_ai_quota.py` | 太平洋時間の日付境界、夏時間切替、送信前ガード、429 での打ち切り |
-| `test_ai_schema.py` | 不正JSONでの再依頼、`MAX_TOKENS` の検知、再依頼上限 |
-| `test_report.py` | HTML が単一ファイルで完結すること、免責が含まれること、需給が含まれないこと |
-| `test_migration.py` | 既存 DB からのマイグレーション、再実行の冪等性 |
+| `test_settings.py` | 設定の読み書き、マスク、環境変数の優先、**キーが DB とログに出ないこと**（keyring はフェイクバックエンド）、同期フォルダ警告 |
+| `test_sources_base.py` | リクエスト間隔が守られること、**バックオフが最小間隔を下回らないこと**、中断フラグで待機が解けること、UA、キーがログに出ないこと |
+| `test_jobs.py` | 開始・進捗・完了・エラー・中断、同種ジョブの多重起動拒否 |
+| `test_autoupdate.py` | 実行順、`auto_update_on_start` オフ、最小間隔によるスキップ、キー未設定・`auto_update_short` オフのスキップ、1ソースの失敗で全体が止まらないこと、EDINET の30日上限、中断 |
+| `test_karauri.py` | 合成 HTML のパース、列数違いでエラー、数値・NULL の扱い、`holder_id` の抽出、全置換、重複行 |
+| `test_short_totals.py` | §2.2.3 の合計算出（消失の二重条件、`holder_id` ごとの最新採用、名称ゆれで二重計上しないこと、該当者なしで 0） |
+| `test_taisyaku.py` | `cp932` の合成 CSV のパース、ヘッダ名による列引き、必要列の欠落でエラー、貸借銘柄でない場合、**確報が速報を上書きし逆は起きないこと** |
+| `test_edinet.py` | §2.4.3 の突合規則すべて、**後から登録した銘柄の過去開示がキャッシュから埋まること**、確定済み判定（当日・エラー・翌日00:30）、取下げ、銘柄削除→再登録 |
+| `test_events.py` | 足のある日付への寄せ（週末・祝日・足がまだ無い場合）、同日複数開示のまとめと優先順、ソート |
+| `test_ai_prompt.py` | **番兵値が初回・再依頼プロンプトに現れないこと**、`app/ai/` のソースに需給の識別子が無いこと、前提の注記が入ること |
+| `test_ai_quota.py` | 太平洋時間の日付境界、夏時間切替、送信前に加算されること、再依頼ごとのガード、429 の3分岐（日次・分次・判別不能）、手動解除 |
+| `test_ai_schema.py` | フィールド順（根拠が結論より前）、不正JSONでの再依頼、`MAX_TOKENS` の検知、再依頼上限 |
+| `test_report.py` | HTML が単一ファイルで完結すること、免責が含まれること、**番兵値が含まれないこと** |
+| `test_migration.py` | 既存 DB からのマイグレーション、再実行の冪等性、`margin_balances` が保持されること |
 | `test_live_*.py` | 実通信。`CHRONOS_LIVE=1` のときだけ実行 |
 
-外部サイトの HTML / CSV / JSON はフィクスチャとして `tests/fixtures/` に保存し、
-ネットワーク無しでテストが完走することを要件とする。
+ネットワーク無しでテストが完走することを要件とする。土台のテスト（2026-09-20 時点で 252 passed / 15 skipped）を壊さない。
+
+---
+
+## 11. 将来拡張（初期リリースの対象外）
+
+レビューの結果、1人で完遂するために初期リリースから外した機能。着手する場合は本書に仕様を起こしてから PLAN にタスクを追加する。
+
+| 機能 | 概要 | 着手時の注意（REVIEW_RESULT 参照） |
+|---|---|---|
+| XBRL 財務数値の DB 化（`disclosure_facts`） | 有報・半期報の `type=5` CSV を取り込み、AI プロンプトに財務数値を足す | CSV の文字コードは実物で要確認。要素 ID は会計基準（日本基準／IFRS／米国基準）で異なる。「主要な経営指標等の推移」系に限定し、`当期`・`連結優先` のコンテキスト選択規則を決める（指摘15） |
+| 開示 PDF のローカル保存 | `type=2` を `data/disclosures/` に保存して開く | 銘柄削除時の掃除、容量管理が必要 |
+| 貸借取引残高の過去分 | 日証金サイトの銘柄検索機能からの取得 | 別のスクレイピング対象になる。規約・構造・負荷の調査が先（指摘3 B案） |
+| TDnet（決算短信・業績修正） | 取得層に差し込む | 無料かつ合法な手段が現れた場合のみ |
+
+---
+
+## 12. 変更履歴
+
+「何を・なぜ」変えたかを残す。実装中に仕様を変えたときも必ず追記する。
+
+| 日付 | 版 | 変更 | 理由 |
+|---|---|---|---|
+| 2026-09-20 | 1.0 | 初版 | — |
+| 2026-09-20 | 1.1 | **起動時の自動更新を追加**（§2.8.2、§1.3、設定3項目） | ユーザー要望。土台には自動更新が無い。日証金の取りこぼし対策も兼ねる |
+| | | ジョブ基盤を追加し、長時間処理を進捗表示・中断可能に（§2.8.1、§4.2） | レビュー指摘7。ブロッキングでは数分の処理を扱えない。自動更新の前提でもある |
+| | | EDINET: 日次キャッシュ、取得範囲を株価の保有期間に、確定済みの定義（§2.4.2、§2.4.4） | 指摘1。後から登録した銘柄の開示が永久に欠落する設計だった |
+| | | EDINET: 突合を EDINET コード基準に。`edinet_codes`・`disclosure_links` を追加（§2.4.3、§3） | 指摘2。`secCode` は提出者のコードで、大量保有・公開買付を検出できない |
+| | | 日証金: 蓄積型に変更、速報/確報、カラム名を融資/貸株に（§2.3、§3） | 指摘3（ユーザーは A 案を選択）。ファイルは固定名・最新日のみと実物で確認 |
+| | | フィクスチャは合成データのみ（§10.1） | 指摘4。実データのコミットは再配布に当たる |
+| | | 階段線を `LWC.LineType.WithSteps` に訂正、貸借は通常線で欠測を切る、whitespace 不要（§2.5） | 指摘5・6。`lineType: 2` は曲線だった |
+| | | Gemini: 429 の判別、SDK リトライ不使用、送信前加算、再依頼ごとのガード、手動解除（§2.7.2） | 指摘8・9・11 |
+| | | スキーマを「根拠 → 結論」の順に、`confidence` を3段階に、リストに上限（§2.7.4） | 指摘10・11 |
+| | | `MAX_TOKENS` の案内を出力上限／thinking 予算に変更、`gemini_thinking_budget` を追加 | 指摘11。期間短縮は出力量に効かない |
+| | | `event_date` を廃止し表示時に足のある日へ寄せる（§2.5.3、§3） | 指摘12。祝日カレンダーが不要になる |
+| | | 分類を `report`/`supply`/`other` に。「決算系」の名称をやめ注記を追加（§2.4.6、§2.5.3、§2.6） | 指摘13。四半期報告書は廃止済みで、EDINET の提出日は決算発表日ではない |
+| | | `short_positions` を `holder_id` キー・銘柄単位の全置換に、消失判定を二重条件に（§2.2） | 指摘14 |
+| | | APIキーの保存先を `keyring` に、同期フォルダ警告（§2.1.2、§7.3） | 指摘16。作業ディレクトリが OneDrive 配下 |
+| | | マーカーの `id` と `hoveredObjectId`、開示チップの独立、イベント欄を右カラムへ（§2.5.3、§2.6） | 指摘17・提案24 |
+| | | karauri: 403/429 で即中止、バックオフ下限、再取得抑止を新着の有無によらず適用（§2.2.4、§4.1） | 指摘18 |
+| | | `disclosure_facts`・PDF ローカル保存・`disclosure_fetch_pdf` を §11 へ移動 | 提案23（ユーザー承認）。初期リリースの規模を抑える |
+| | | 需給を送らない担保を番兵値方式に（§2.7.3、§10） | 提案22 |
+| | | 別 PC への移行手順を追加（§2.1.4） | クローンでは設定・データ・APIキーが引き継がれないため。貸借取引残高は取り直せない |
