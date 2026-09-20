@@ -184,6 +184,8 @@ main { padding: 20px 24px 40px; max-width: 1680px; margin: 0 auto; }
 /* ---------- dashboard ---------- */
 .dash-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .toolbar-note { color: var(--faint); font-size: 12px; margin-left: 4px; }
+.toolbar-note.is-ok { color: var(--accent-strong); }
+.toolbar-note.is-error { color: var(--up); }
 
 .quote-bar {
   display: flex; align-items: center; gap: 36px; flex-wrap: wrap;

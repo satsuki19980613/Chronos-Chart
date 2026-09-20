@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -666,3 +667,82 @@ def cleanup_orphans(db) -> int:
         )
         deleted = cursor.rowcount
     return deleted
+
+
+# ---------- 書類閲覧・一覧（P4-4。SPEC §2.4.6・§4.2） ----------
+
+# SPEC §2.4.6: 書類閲覧ページの URL。末尾は「書類管理番号,履歴番号,言語」（履歴番号は空でよい、言語 2=日本語）
+VIEWER_URL_TEMPLATE = "https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?{doc_id},,2"
+
+# docID は URL にそのまま埋め込むので、英数字だけであることを確かめてから組み立てる（SPEC §2.4.6）
+_DOC_ID_RE = re.compile(r"^[A-Za-z0-9]+$")
+
+
+def viewer_url(doc_id: str) -> str:
+    """EDINET の書類閲覧ページの URL を組み立てる（SPEC §2.4.6）。
+
+    `doc_id` が英数字だけでなければ `UserFacingError`（URL への埋め込み前に必ず確かめる）。
+    """
+    if not doc_id or not _DOC_ID_RE.match(doc_id):
+        raise UserFacingError(f"不正な書類番号です: {doc_id!r}")
+    return VIEWER_URL_TEMPLATE.format(doc_id=doc_id)
+
+
+def list_for_symbol(db, symbol: str) -> dict:
+    """銘柄に紐づく開示の一覧と分類別件数を返す（SPEC §2.4.6・§4.2）。
+
+    `disclosures` と `disclosure_links` を `symbol` で結合する。1つの書類に複数の role が
+    付くことがある（§2.4.3。例: 自己株式の公開買付で同じ銘柄に `subject` と `filer` の両方）ので、
+    書類ごとに1件へまとめて `roles` に配列で持つ。`items` は `submit_at` の降順（同じ `submit_at`
+    なら `doc_id` の昇順で安定させる。`roles` の並びも `role` 順に固定する）。登録が1件も無ければ `counts` は全部0、`items` は空リスト。
+    `fetched_days` は EDINET を取得済みの日数（0件表示の文言を分けるために返す）。
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT d.doc_id, d.submit_at, d.category, d.doc_type_code, d.description,
+                   d.filer_name, d.withdrawal, l.role
+            FROM disclosures d
+            JOIN disclosure_links l ON l.doc_id = d.doc_id
+            WHERE l.symbol = ?
+            ORDER BY d.submit_at DESC, d.doc_id ASC, l.role ASC
+            """,
+            (symbol,),
+        ).fetchall()
+
+    items: list[dict] = []
+    by_doc_id: dict[str, dict] = {}
+    for row in rows:
+        doc_id = row["doc_id"]
+        item = by_doc_id.get(doc_id)
+        if item is None:
+            item = {
+                "doc_id": doc_id,
+                "submit_at": row["submit_at"],
+                "category": row["category"],
+                "roles": [],
+                "doc_type_code": row["doc_type_code"],
+                "description": row["description"],
+                "filer_name": row["filer_name"],
+                "withdrawal": row["withdrawal"],
+            }
+            by_doc_id[doc_id] = item
+            items.append(item)
+        if row["role"] not in item["roles"]:
+            item["roles"].append(row["role"])
+
+    counts = {"report": 0, "supply": 0, "other": 0, "withdrawn": 0, "total": len(items)}
+    # 「0件」が「まだ取得していない」のか「取得したがこの銘柄の提出が無い」のかを
+    # 画面で区別できるようにする（SPEC §2.4.6 の件数表示）
+    with db.connect() as conn:
+        fetched_days = conn.execute(
+            "SELECT COUNT(*) AS n FROM fetch_log WHERE source = ? AND result IN ('ok', 'empty')",
+            (edinet.SOURCE,),
+        ).fetchone()["n"]
+    for item in items:
+        if item["category"] in counts:
+            counts[item["category"]] += 1
+        if item["withdrawal"] is not None and item["withdrawal"] != 0:
+            counts["withdrawn"] += 1
+
+    return {"counts": counts, "items": items, "fetched_days": fetched_days}

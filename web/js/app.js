@@ -71,7 +71,7 @@
       t.setAttribute("aria-selected", String(active));
     });
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${name}`));
-    if (name === "register") refreshShortAllAvailability();
+    if (name === "register") { refreshShortAllAvailability(); refreshDisclosuresAvailability(); }
     if (name === "dashboard") openDashboard(state.currentSymbol);
     if (name === "export") loadExportFiles();
     if (name === "settings") SettingsView.load();
@@ -135,6 +135,7 @@
     $("stock-empty").hidden = list.length > 0;
     $("update-all").disabled = list.length === 0;
     refreshShortAllAvailability();
+    refreshDisclosuresAvailability();
     $("stock-list").innerHTML = list.map((s) => `
       <tr>
         <td class="symbol">${f.escape(s.code)}</td>
@@ -235,6 +236,63 @@
     if (state.currentSymbol && $("view-dashboard").classList.contains("is-active")) await openDashboard(state.currentSymbol);
   }
 
+  // ---------- 開示（EDINET）の取得（SPEC §2.4.4） ----------
+  async function refreshDisclosuresAvailability() {
+    const fetchBtn = $("disclosures-fetch");
+    const redoBtn = $("disclosures-redo");
+    try {
+      const settings = await api.call("get_settings");
+      const ok = Boolean(settings.secrets.edinet_api_key.source);
+      const title = ok ? "" : "設定タブで EDINET の API キーを登録してください";
+      fetchBtn.disabled = !ok;
+      fetchBtn.title = title;
+      redoBtn.disabled = !ok;
+      redoBtn.title = title;
+    } catch (_) {
+      // 設定を読めなくても登録画面自体は使えるようにしておく（判断は次回の refreshStocks に委ねる）
+    }
+  }
+
+  async function runDisclosures(redoDays) {
+    let est;
+    try {
+      est = await api.call("estimate_disclosures", redoDays);
+    } catch (err) {
+      toast(err.message, "error", 8000);
+      return;
+    }
+    if (est.targets === 0) {
+      toast("取得が必要な日付はありません（すべて取得済みです）");
+      return;
+    }
+    // 「対象 N 日分」と期間を同じ行に並べると、N と期間の日数が一致しないときに食い違って見える
+    //（当日を60秒以内に取得済みなら対象から外れる、など）。行を分け、期間は「探した範囲」だと分かるようにする
+    const etaText = est.eta_sec < 60 ? "1分未満で終わります" : `およそ ${Math.round(est.eta_sec / 60)} 分かかります`;
+    const rangeText = est.start ? `${est.start} 〜 ${est.end}` : est.end;
+    let message = `取得する日数: ${est.targets} 日分（間隔 ${est.interval_sec} 秒 ＝ ${etaText}）\n`;
+    message += `探す範囲: ${rangeText}\n\n`;
+    if (redoDays > 0) {
+      message += "これは取得済みの日付も含めてもう一度取りに行く操作です（過去分にも取下げ・書類情報の修正による更新が入ることがあります）。\n\n";
+    }
+    message += "実行しますか？（実行中はいつでも中断できます）";
+    const ok = confirm(message);
+    if (!ok) return;
+
+    let job;
+    try {
+      job = await Jobs.run("disclosures", redoDays > 0 ? { redo_days: redoDays } : {});
+    } catch (err) {
+      toast(err.message, "error", 8000);
+      return;
+    }
+    if (job.state === "cancelled") {
+      toast("開示の取得を中断しました");
+    } else {
+      toast(job.result?.summary || "開示の取得が完了しました", job.result?.aborted ? "warn" : "info", 8000);
+    }
+    if (state.currentSymbol && $("view-dashboard").classList.contains("is-active")) await openDashboard(state.currentSymbol);
+  }
+
   function viewStock(symbol) {
     state.currentSymbol = symbol;
     switchTab("dashboard");
@@ -255,9 +313,11 @@
     $("dash-update").disabled = !hasStocks;
     $("stock-select").disabled = !hasStocks;
     $("dash-supply-hint").hidden = !hasStocks;
+    $("dash-disclosure-counts").hidden = !hasStocks;
     if (!hasStocks) {
       $("dash-fetch-short").disabled = true;
       $("dash-fetch-taisyaku").disabled = true;
+      $("dash-disclosure-counts").textContent = "";
       destroyChart();
       return;
     }
@@ -277,6 +337,29 @@
     $("stock-select").value = target;
     state.dashboard = data;
     renderDashboard();
+    await updateDisclosureCounts(target);
+  }
+
+  // 開示件数の表示（SPEC §2.4.6）。取得に失敗しても、既に表示済みのチャートは妨げない
+  async function updateDisclosureCounts(symbol) {
+    const el = $("dash-disclosure-counts");
+    try {
+      const { counts, fetched_days: fetchedDays } = await api.call("get_disclosures", symbol);
+      if (!counts || counts.total === 0) {
+        // 「0件」には2通りある。取得済みなのに「まだ取得していません」と出すと、
+        // 済んだ取得をもう一度実行させてしまう
+        el.textContent = fetchedDays
+          ? `この銘柄の開示はまだありません（EDINET は ${fetchedDays} 日分取得済み）。`
+          : "まだ取得していません。「登録」タブの「開示を取得」から取得できます。";
+        return;
+      }
+      let text = `開示 ${counts.total}件（有報・半期報 ${counts.report} ／ 需給関連 ${counts.supply} ／ その他 ${counts.other}`;
+      if (counts.withdrawn > 0) text += ` ／ 取下げ ${counts.withdrawn}`;
+      text += "）";
+      el.textContent = text;
+    } catch (_) {
+      el.textContent = "";
+    }
   }
 
   function renderDashboard() {
@@ -487,6 +570,8 @@
     $("stock-list").addEventListener("click", onStockListClick);
     $("update-all").addEventListener("click", updateAll);
     $("short-all").addEventListener("click", runShortAll);
+    $("disclosures-fetch").addEventListener("click", () => runDisclosures(0));
+    $("disclosures-redo").addEventListener("click", () => runDisclosures(90));
     $("stock-select").addEventListener("change", (e) => openDashboard(e.target.value));
     $("dash-update").addEventListener("click", async () => {
       const symbol = state.currentSymbol;
