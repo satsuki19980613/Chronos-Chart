@@ -28,8 +28,14 @@ from .base import HttpClient, HttpError, user_agent
 log = logging.getLogger(__name__)
 
 _MIN_INTERVAL_FLOOR = 5.0
-_LOST_NOTE_TOKEN = "消失"
+# 報告義務消失を示す備考の文言（部分一致）。'消失' が本来の表記だが、
+# 2026-09-20 に実サイト（karauri.net の 9984）を1回取得したところ '解消'（＝「ポジション解消」）
+# という表記も観測されたため、両方を既知の文言として扱う（SPEC §2.2.3）。
+_LOST_NOTE_TOKENS = ("消失", "解消")
 _LOST_RATIO_THRESHOLD = 0.5
+# _check_note() が警告を出さない「既知の備考」の完全一致リスト。
+# 報告義務消失を示す文言はここにまとめておく（直書きすると増やすたびに漏れやすいため）。
+_KNOWN_NOTES = ("報告義務消失", "ポジション解消")
 _KNOWN_NOTE_RE = re.compile(r"^再IN（前回\d{4}-\d{2}-\d{2}）$")
 _EXPECTED_COLUMNS = 7
 _MAX_CONSECUTIVE_FAILURES = 3  # 5xx・タイムアウトが連続でこの回数に達したらバッチを中止する（SPEC §2.2.4）
@@ -422,7 +428,7 @@ def _parse_number(text: str, pct: bool = False, suffix: str = "") -> float | int
 
 
 def _check_note(note: str) -> None:
-    if note and note != "報告義務消失" and not _KNOWN_NOTE_RE.fullmatch(note):
+    if note and note not in _KNOWN_NOTES and not _KNOWN_NOTE_RE.fullmatch(note):
         log.warning("karauri: unknown note %r", note)
 
 
@@ -437,7 +443,9 @@ def _latest_as_of(holder_rows_sorted_by_date: list[dict], date: str) -> dict | N
 
 
 def _is_lost(record: dict) -> bool:
-    """報告義務消失の判定。note に '消失' を含む、または ratio が 0.5 未満（SPEC §2.2.3）。"""
+    """報告義務消失の判定。note に '消失' か '解消' を含む、または ratio が 0.5 未満（SPEC §2.2.3）。"""
     note = record.get("note") or ""
     ratio = record.get("ratio")
-    return _LOST_NOTE_TOKEN in note or (ratio is not None and ratio < _LOST_RATIO_THRESHOLD)
+    return any(token in note for token in _LOST_NOTE_TOKENS) or (
+        ratio is not None and ratio < _LOST_RATIO_THRESHOLD
+    )

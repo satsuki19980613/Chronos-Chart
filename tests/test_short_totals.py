@@ -80,6 +80,17 @@ def test_holder_with_no_report_yet_is_not_counted():
     assert first["total_ratio"] == 1.0
 
 
+def test_position_closed_note_excludes_even_with_high_ratio():
+    """'ポジション解消'（実サイトの 9984 で観測）は note 側の条件だけで消失と判定できること。
+
+    ratio が 0.5 以上でも除外されることを固定し、ratio<0.5 側の条件に頼らずに
+    文字列側でも報告義務消失を拾えていることを確認する。
+    """
+    rows = [_row("2026-05-01", "p", "P Fund", 1.2, 120000, note="ポジション解消")]
+    totals = compute_totals(rows)
+    assert totals == [{"date": "2026-05-01", "total_ratio": 0.0, "total_qty": 0, "holders": 0}]
+
+
 def test_ratio_none_is_not_treated_as_lost():
     """ratio が None の場合は 0.5 未満と比較できないので、note に基づく判定のみで消失を決める。"""
     rows = [_row("2026-04-01", "n", "N", None, None)]
