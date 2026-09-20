@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -480,3 +482,412 @@ def test_job_writes_cache_and_fetch_log_end_to_end(monkeypatch, tmp_path):
 
     # キーはクエリパラメータで送られ、URL 文字列は自前で組み立てていない
     assert all(params.get("Subscription-Key") == "test-edinet-api-key" for _, params in session.calls)
+
+
+# ---------- 突合・分類（SPEC §2.4.3・§2.4.6） ----------
+
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "edinet_documents_synthetic.json"
+
+
+def _load_fixture() -> dict:
+    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _result_by_doc_id(data: dict, doc_id: str) -> dict:
+    for row in data["results"]:
+        if row.get("docID") == doc_id:
+            return row
+    raise KeyError(doc_id)
+
+
+def _register_stock(db: Database, symbol: str, code: str, name: str, edinet_code: str | None = None) -> None:
+    """登録銘柄を作り、必要なら `edinet_codes` にも対応する行を足す。"""
+    db.upsert_stock(symbol, code, name, "東証", "JPY")
+    if edinet_code:
+        with db.write() as conn:
+            conn.execute(
+                "INSERT INTO edinet_codes (edinet_code, sec_code, name) VALUES (?, ?, ?)",
+                (edinet_code, f"{code}0", name),
+            )
+
+
+def _register_all_fixture_stocks(db: Database) -> None:
+    """合成フィクスチャに登場する4銘柄を登録する（`3333.T` だけ EDINET コード未登録）。"""
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    _register_stock(db, "2222.T", "2222", "架空商事", edinet_code="E90002")
+    _register_stock(db, "3333.T", "3333", "架空繊維")  # secCode 補助突合のテスト用
+    _register_stock(db, "4444.T", "4444", "架空電機", edinet_code="E90003")
+
+
+# ---------- classify ----------
+
+
+@pytest.mark.parametrize(
+    "doc_type_code, expected",
+    [
+        ("120", "report"),
+        ("130", "report"),
+        ("140", "report"),
+        ("150", "report"),
+        ("160", "report"),
+        ("170", "report"),
+        ("220", "supply"),
+        ("230", "supply"),
+        ("350", "supply"),
+        ("360", "supply"),
+        ("240", "supply"),  # 公開買付関連の下限
+        ("320", "supply"),  # 公開買付関連の上限
+        ("280", "supply"),
+        ("239", "other"),  # 240未満は範囲外
+        ("321", "other"),  # 320超は範囲外
+        ("180", "other"),
+        ("190", "other"),
+        ("030", "other"),
+        ("040", "other"),
+        ("235", "other"),
+        ("236", "other"),
+        ("999", "other"),
+        (None, "other"),
+        ("", "other"),
+        ("abc", "other"),
+    ],
+)
+def test_classify_boundaries(doc_type_code, expected):
+    assert disclosures.classify(doc_type_code) == expected
+
+
+# ---------- parse_document ----------
+
+
+def test_parse_document_maps_all_columns_and_empty_strings_to_none():
+    data = _load_fixture()
+    raw = _result_by_doc_id(data, "S9000001")
+    doc = disclosures.parse_document(raw)
+    assert doc == {
+        "doc_id": "S9000001",
+        "edinet_code": "E90001",
+        "sec_code": "11110",
+        "filer_name": "架空製作所株式会社",
+        "issuer_edinet_code": None,
+        "subject_edinet_code": None,
+        "doc_type_code": "120",
+        "form_code": "030000",
+        "ordinance_code": "010",
+        "description": "有価証券報告書－第10期(2025年4月1日－2026年3月31日)",
+        "reason": None,
+        "period_start": "2025-04-01",
+        "period_end": "2026-03-31",
+        "submit_at": "2026-06-25 09:00",
+        "parent_doc_id": None,
+        "withdrawal": 0,
+        "disclosure": 0,
+        "category": "report",
+    }
+
+
+def test_parse_document_keeps_sec_code_as_string_even_with_letters():
+    raw = {
+        "docID": "S1",
+        "docTypeCode": "120",
+        "submitDateTime": "2026-01-01 00:00",
+        "secCode": "409A0",
+    }
+    doc = disclosures.parse_document(raw)
+    assert doc["sec_code"] == "409A0"
+    assert isinstance(doc["sec_code"], str)
+
+
+def test_parse_document_withdrawal_and_disclosure_become_int_from_str_or_number():
+    base = {"docID": "S1", "docTypeCode": "120", "submitDateTime": "2026-01-01 00:00"}
+    from_str = disclosures.parse_document({**base, "withdrawalStatus": "1", "disclosureStatus": "2"})
+    from_number = disclosures.parse_document({**base, "withdrawalStatus": 1, "disclosureStatus": 2})
+    assert (from_str["withdrawal"], from_str["disclosure"]) == (1, 2)
+    assert (from_number["withdrawal"], from_number["disclosure"]) == (1, 2)
+
+
+@pytest.mark.parametrize("missing_key", ["docID", "docTypeCode", "submitDateTime"])
+def test_parse_document_returns_none_when_a_required_field_is_missing(missing_key):
+    raw = {"docID": "S1", "docTypeCode": "120", "submitDateTime": "2026-01-01 00:00"}
+    raw.pop(missing_key)
+    assert disclosures.parse_document(raw) is None
+
+
+def test_parse_document_drops_broken_fixture_items():
+    data = _load_fixture()
+    missing_doc_id = next(row for row in data["results"] if "docID" not in row)
+    missing_submit_at = _result_by_doc_id(data, "S9000011")
+    assert disclosures.parse_document(missing_doc_id) is None
+    assert disclosures.parse_document(missing_submit_at) is None
+
+
+# ---------- link_targets ----------
+
+
+def test_link_targets_separates_resolved_and_unresolved_symbols(tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    _register_stock(db, "3333.T", "3333", "架空繊維")  # EDINET コードは未登録
+
+    targets = disclosures.link_targets(db)
+
+    assert targets["by_edinet_code"] == {"E90001": ["1111.T"]}
+    assert targets["by_sec_code"] == {"33330": ["3333.T"]}
+
+
+# ---------- match_roles ----------
+
+
+def test_match_roles_major_holding_is_not_matched_by_filer_edinet_code():
+    """CLAUDE.md 不変条件: 大量保有(350/360)を edinetCode（提出者）で突合してはいけない。"""
+    targets = {"by_edinet_code": {"E90001": ["1111.T"]}, "by_sec_code": {}}
+    doc = {
+        "doc_type_code": "350",
+        "edinet_code": "E90001",
+        "issuer_edinet_code": "E90099",  # 別会社
+        "sec_code": "11110",
+    }
+    assert disclosures.match_roles(doc, targets) == []
+
+
+def test_match_roles_major_holding_matches_issuer_edinet_code():
+    targets = {"by_edinet_code": {"E90002": ["2222.T"]}, "by_sec_code": {}}
+    doc = {
+        "doc_type_code": "360",
+        "edinet_code": "E90099",
+        "issuer_edinet_code": "E90002",
+        "sec_code": None,
+    }
+    assert disclosures.match_roles(doc, targets) == [("2222.T", "issuer")]
+
+
+def test_match_roles_tender_offer_matches_both_subject_and_filer():
+    targets = {"by_edinet_code": {"E90001": ["1111.T"], "E90002": ["2222.T"]}, "by_sec_code": {}}
+    doc = {
+        "doc_type_code": "240",
+        "edinet_code": "E90002",
+        "subject_edinet_code": "E90001",
+        "sec_code": None,
+    }
+    assert set(disclosures.match_roles(doc, targets)) == {("1111.T", "subject"), ("2222.T", "filer")}
+
+
+def test_match_roles_sec_code_fallback_only_helps_unresolved_symbol_and_never_350():
+    targets = {"by_edinet_code": {}, "by_sec_code": {"33330": ["3333.T"]}}
+
+    other_doc = {"doc_type_code": "180", "edinet_code": "E90999", "sec_code": "33330"}
+    assert disclosures.match_roles(other_doc, targets) == [("3333.T", "filer")]
+
+    major_holding_doc = {
+        "doc_type_code": "350",
+        "edinet_code": "E90999",
+        "issuer_edinet_code": "E90999",
+        "sec_code": "33330",
+    }
+    assert disclosures.match_roles(major_holding_doc, targets) == []
+
+
+# ---------- save_documents / scan_cache（統合） ----------
+
+
+def test_scan_cache_matches_classifies_and_saves_per_fixture(tmp_path):
+    db = _db(tmp_path)
+    _register_all_fixture_stocks(db)
+    edinet.write_cache("2026-06-25", _load_fixture(), base_dir=tmp_path)
+
+    result = disclosures.scan_cache(db, base_dir=tmp_path)
+
+    assert result == {"dates": 1, "documents": 6, "links": 7}
+
+    with db.connect() as conn:
+        doc_ids = {row["doc_id"] for row in conn.execute("SELECT doc_id FROM disclosures")}
+        links = {
+            (row["doc_id"], row["symbol"], row["role"])
+            for row in conn.execute("SELECT doc_id, symbol, role FROM disclosure_links")
+        }
+        categories = dict(conn.execute("SELECT doc_id, category FROM disclosures").fetchall())
+        withdrawal = dict(conn.execute("SELECT doc_id, withdrawal FROM disclosures").fetchall())
+
+    # 登録される書類（保存されないものは含まれない）
+    assert doc_ids == {"S9000001", "S9000002", "S9000004", "S9000005", "S9000006", "S9000008"}
+    # 大量保有を提出者コードで拾ってしまう(S9000003)・無関係(S9000007)・
+    # secCode一致でも350(S9000009)・壊れた要素は登録されない
+    assert "S9000003" not in doc_ids
+    assert "S9000007" not in doc_ids
+    assert "S9000009" not in doc_ids
+
+    assert links == {
+        ("S9000001", "1111.T", "filer"),
+        ("S9000002", "2222.T", "issuer"),
+        ("S9000004", "1111.T", "subject"),
+        ("S9000004", "2222.T", "filer"),
+        ("S9000005", "4444.T", "filer"),
+        ("S9000006", "1111.T", "filer"),
+        ("S9000008", "3333.T", "filer"),  # secCode 補助突合
+    }
+
+    assert categories["S9000001"] == "report"
+    assert categories["S9000002"] == "supply"
+    assert categories["S9000004"] == "supply"
+    assert categories["S9000005"] == "other"
+    assert categories["S9000008"] == "other"
+    assert withdrawal["S9000006"] == 1
+
+
+def test_scan_cache_is_idempotent_and_does_not_duplicate_links(tmp_path):
+    db = _db(tmp_path)
+    _register_all_fixture_stocks(db)
+    edinet.write_cache("2026-06-25", _load_fixture(), base_dir=tmp_path)
+
+    first = disclosures.scan_cache(db, base_dir=tmp_path)
+    with db.connect() as conn:
+        count_after_first = conn.execute("SELECT COUNT(*) AS c FROM disclosure_links").fetchone()["c"]
+
+    second = disclosures.scan_cache(db, base_dir=tmp_path)
+    with db.connect() as conn:
+        count_after_second = conn.execute("SELECT COUNT(*) AS c FROM disclosure_links").fetchone()["c"]
+
+    assert count_after_first == count_after_second == first["links"]
+    assert second["links"] == 0  # ON CONFLICT DO NOTHING で新規リンクは増えない
+
+
+def test_scan_cache_backfills_newly_registered_stock_from_past_cache(tmp_path):
+    """SPEC §2.4.2: 銘柄を新規登録したとき、API を呼ばず既存キャッシュの再走査で過去開示を埋められる。"""
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache("2026-06-25", _load_fixture(), base_dir=tmp_path)
+
+    disclosures.scan_cache(db, base_dir=tmp_path)  # この時点では 4444.T は未登録
+    with db.connect() as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) AS c FROM disclosure_links WHERE symbol = '4444.T'").fetchone()["c"] == 0
+        )
+
+    _register_stock(db, "4444.T", "4444", "架空電機", edinet_code="E90003")  # 後から登録
+    result = disclosures.scan_cache(db, symbols=["4444.T"], base_dir=tmp_path)
+
+    assert result == {"dates": 1, "documents": 1, "links": 1}
+    with db.connect() as conn:
+        row = conn.execute("SELECT doc_id, role FROM disclosure_links WHERE symbol = '4444.T'").fetchone()
+    assert (row["doc_id"], row["role"]) == ("S9000005", "filer")
+
+
+def test_scan_cache_skips_corrupted_cache_date_and_continues(tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    edinet.write_cache("2026-06-25", _load_fixture(), base_dir=tmp_path)
+
+    broken_path = edinet.cache_path("2026-06-26", base_dir=tmp_path)
+    broken_path.parent.mkdir(parents=True, exist_ok=True)
+    broken_path.write_bytes(b"not a gzip file")
+
+    result = disclosures.scan_cache(db, base_dir=tmp_path)
+
+    assert result["dates"] == 1  # 壊れた日は数に入れず、例外にもしない
+    assert result["documents"] > 0
+
+
+def test_scan_cache_noop_when_no_stocks_or_no_dates(tmp_path):
+    db = _db(tmp_path)
+    edinet.write_cache("2026-06-25", _load_fixture(), base_dir=tmp_path)
+
+    # 登録銘柄が0件
+    assert disclosures.scan_cache(db, base_dir=tmp_path) == {"dates": 0, "documents": 0, "links": 0}
+
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    # 対象日が0件
+    assert disclosures.scan_cache(db, dates=[], base_dir=tmp_path) == {"dates": 0, "documents": 0, "links": 0}
+
+
+# ---------- cleanup_orphans ----------
+
+
+def test_cleanup_orphans_deletes_only_documents_with_no_remaining_links(tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    _register_stock(db, "2222.T", "2222", "架空商事", edinet_code="E90002")
+    edinet.write_cache("2026-06-25", _load_fixture(), base_dir=tmp_path)
+    disclosures.scan_cache(db, base_dir=tmp_path)
+
+    # S9000004 は 1111.T(subject) と 2222.T(filer) の両方にリンクしている。
+    # 1111.T のリンクだけ手で消して、「他の銘柄がまだ参照している書類」を作る
+    with db.write() as conn:
+        conn.execute("DELETE FROM disclosure_links WHERE symbol = '1111.T'")
+
+    deleted = disclosures.cleanup_orphans(db)
+
+    with db.connect() as conn:
+        remaining = {row["doc_id"] for row in conn.execute("SELECT doc_id FROM disclosures")}
+
+    # 1111.T にしかリンクしていなかった書類（filer のみ）は消える
+    assert "S9000001" not in remaining
+    assert "S9000006" not in remaining
+    # 2222.T のリンクがまだ残っている書類は消えない
+    assert "S9000002" in remaining
+    assert "S9000004" in remaining
+    assert deleted == 2
+
+
+# ---------- disclosures_job とのつなぎ込み ----------
+
+
+def test_disclosures_job_scans_cache_after_fetch_and_returns_registered(monkeypatch, tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    today = disclosures.today_jst()
+    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    _insert_price(db, start)  # fetch_range 用（symbol は 1111.T のまま upsert される）
+    settings = _FakeSettings()
+    fixture = _load_fixture()
+    cache_dir = tmp_path / "cache"
+
+    def fake_fetch_day(db_, date, api_key, cancel=None, client=None, base_dir=None):
+        if date == start:
+            edinet.write_cache(date, fixture, base_dir=base_dir)
+            return _ok(date, documents=len(fixture["results"]))
+        edinet.write_cache(date, {"metadata": {}, "results": []}, base_dir=base_dir)
+        return {"date": date, "result": "empty", "documents": 0, "bytes": 1}
+
+    monkeypatch.setattr(edinet, "fetch_day", fake_fetch_day)
+    job = disclosures.disclosures_job(db, settings, base_dir=cache_dir)
+    result = job(FakeCtx(), {})
+
+    # 1111.T が登録銘柄なので、fixture 中で 1111.T に紐づく書類だけが登録される
+    # （filer: S9000001, S9000006 / subject: S9000004 の3件・3リンク）
+    assert result["registered"] == {"documents": 3, "links": 3}
+    assert "開示 3件を登録" in result["summary"]
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS c FROM disclosures").fetchone()["c"] == 3
+
+
+def test_disclosures_job_scans_fetched_dates_before_reraising_cancelled(monkeypatch, tmp_path):
+    db = _db(tmp_path)
+    _register_stock(db, "1111.T", "1111", "架空製作所", edinet_code="E90001")
+    today = disclosures.today_jst()
+    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
+    _insert_price(db, start)
+    settings = _FakeSettings()
+    fixture = _load_fixture()
+    cache_dir = tmp_path / "cache"
+
+    calls = []
+
+    def fake_fetch_day(db_, date, api_key, cancel=None, client=None, base_dir=None):
+        calls.append(date)
+        edinet.write_cache(date, fixture, base_dir=base_dir)
+        if len(calls) == 2:
+            cancel.set()
+        return _ok(date, documents=len(fixture["results"]))
+
+    monkeypatch.setattr(edinet, "fetch_day", fake_fetch_day)
+
+    manager = JobManager()
+    manager.register("disclosures", disclosures.disclosures_job(db, settings, base_dir=cache_dir))
+    started = manager.start("disclosures", {})
+    final = manager.join(started["id"], WAIT)
+
+    assert final["state"] == "cancelled"
+    assert len(calls) == 2
+    # 中断されても、それまでに取得できた分はキャッシュと突合されて DB に登録済み
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS c FROM disclosures").fetchone()["c"] == 3

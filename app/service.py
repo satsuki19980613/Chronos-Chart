@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from . import ai_export
+from . import disclosures
 from . import indicators as ind
 from .config import INITIAL_PERIOD, OUTPUT_DIR
 from .csv_export import csv_paths, export_csv, remove_csv
@@ -54,6 +55,10 @@ class StockService:
                     raise
             self.db.log_fetch("yahoo", symbol)
             log.info("registered %s (%d rows)", symbol, len(prices))
+            try:
+                disclosures.scan_cache(self.db, symbols=[symbol])
+            except Exception:
+                log.exception("disclosures scan_cache failed for %s", symbol)
             return {"stock": self.db.get_stock(symbol), "added": len(prices), "warnings": warnings}
         return self.update(symbol)
 
@@ -117,6 +122,10 @@ class StockService:
         with self._symbol_locks[symbol]:
             self.db.delete_stock(symbol)
             remove_csv(self.csv_dir, symbol)
+        try:
+            disclosures.cleanup_orphans(self.db)
+        except Exception:
+            log.exception("disclosures cleanup_orphans failed after deleting %s", symbol)
 
     def list_stocks(self) -> list[dict]:
         return self.db.list_stocks()
