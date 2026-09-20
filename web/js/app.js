@@ -13,19 +13,50 @@
     chartSettings: loadChartSettings(),
     exportSelected: new Set(),
     exportDays: "60",
+    visibleRange: null, // チャートの表示範囲 {from, to}（"YYYY-MM-DD"）。P5-4 でイベント欄の絞り込みに使う
+    pendingMarkerId: null, // 直近クリックされたマーカーの id（"ev:<日付>"）。P5-5 でイベント欄の強調に使う
   };
 
+  // チャートの表示範囲が変わるたびに呼ばれる（render() 登録直後にも1回呼ばれる）。
+  // イベント欄の絞り込み表示は P5-4 で足す。ここでは state に控えるだけにする
+  function onChartRangeChange(range) {
+    state.visibleRange = range;
+  }
+
+  // マーカークリックのたびに呼ばれる。イベント欄の該当行へのスクロール・強調は P5-5 で足す
+  function onMarkerClick(id) {
+    state.pendingMarkerId = id;
+  }
+
   // ---------- 共通 ----------
+  // 保存値には「保存時点で存在したチップ id の一覧」を known として持たせる。
+  // 新しいチップ（例: disclosures）を既定 ON で追加しても、既存ユーザーの保存値には入っていないため
+  // 「既定 ON なのに保存値に無いので OFF 扱い」になってしまう。DEFAULTS で ON かつ known に無い id だけを
+  // 追加すれば、ユーザーが意図的に OFF にしたチップは復活させずに済む。この移行は今後チップを足すときにも効く
+  function migrateChipList(saved, savedKnown, allIds, defaultIds, legacyKnownIds) {
+    const known = savedKnown ? new Set(savedKnown) : legacyKnownIds; // known を持たない古い保存値の既定
+    const list = saved.filter((id) => allIds.has(id));
+    const listSet = new Set(list);
+    for (const id of defaultIds) {
+      if (allIds.has(id) && !known.has(id) && !listSet.has(id)) {
+        list.push(id);
+        listSet.add(id);
+      }
+    }
+    return list;
+  }
+
   function loadChartSettings() {
+    const overlayIds = new Set(StockChart.OVERLAYS.map((i) => i.id));
+    const paneIds = new Set(StockChart.PANES.map((i) => i.id));
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved && Array.isArray(saved.overlays) && Array.isArray(saved.panes)) {
-        const ids = (items) => new Set(items.map((i) => i.id));
-        const overlayIds = ids(StockChart.OVERLAYS);
-        const paneIds = ids(StockChart.PANES);
+        // known を持たない古い保存値は「disclosures 以外はすべて既知」とみなす（このチップを今回追加したため）
+        const legacyKnownOverlays = new Set([...overlayIds].filter((id) => id !== "disclosures"));
         return {
-          overlays: saved.overlays.filter((id) => overlayIds.has(id)),
-          panes: saved.panes.filter((id) => paneIds.has(id)),
+          overlays: migrateChipList(saved.overlays, saved.knownOverlays, overlayIds, StockChart.DEFAULTS.overlays, legacyKnownOverlays),
+          panes: migrateChipList(saved.panes, saved.knownPanes, paneIds, StockChart.DEFAULTS.panes, paneIds),
         };
       }
     } catch (_) { /* 保存値がなければ既定値 */ }
@@ -33,7 +64,16 @@
   }
 
   function saveChartSettings() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.chartSettings)); } catch (_) { /* noop */ }
+    try {
+      const payload = {
+        overlays: state.chartSettings.overlays,
+        panes: state.chartSettings.panes,
+        // 次回の移行判定用に、保存時点で存在したチップ id を控えておく
+        knownOverlays: StockChart.OVERLAYS.map((i) => i.id),
+        knownPanes: StockChart.PANES.map((i) => i.id),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (_) { /* noop */ }
   }
 
   function toast(message, type = "info", ms = 4000) {
@@ -459,14 +499,22 @@
     }
   }
 
-  function renderChart() {
+  // preserveRange: true のときは表示範囲（visibleLogicalRange）を引き継ぐ（チップ切替からの再生成用）。
+  // false（既定）のときは銘柄切替・初回表示どおり state.range（期間ボタン）で設定し直す
+  function renderChart({ preserveRange = false } = {}) {
     if (!state.dashboard) return;
+    const prevRange = preserveRange ? state.chart?.visibleLogicalRange() : null;
     destroyChart();
     state.chart = StockChart.render(
       $("chart"), $("pane-labels"), $("chart-legend"),
       state.dashboard, state.dashboard.stock.currency, state.chartSettings,
     );
-    state.chart.setRange(state.range);
+    // 購読はチャートの再生成のたびに閉じてしまうので、生成のたびに張り直す
+    state.chart.onVisibleRangeChange(onChartRangeChange);
+    state.chart.onMarkerClick(onMarkerClick);
+    const restored = prevRange && typeof prevRange.from === "number" && typeof prevRange.to === "number";
+    if (restored) state.chart.setVisibleLogicalRange(prevRange);
+    else state.chart.setRange(state.range);
   }
 
   function renderChips() {
@@ -482,7 +530,7 @@
         if (idx >= 0) list.splice(idx, 1); else list.push(btn.dataset.id);
         btn.classList.toggle("is-on", idx < 0);
         saveChartSettings();
-        renderChart();
+        renderChart({ preserveRange: true });
       };
     };
     build(StockChart.OVERLAYS, "overlays", $("overlay-chips"));
