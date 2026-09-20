@@ -209,6 +209,8 @@ main { padding: 20px 24px 40px; max-width: 1680px; margin: 0 auto; }
 .is-down { color: var(--down); }
 
 .dash-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+/* 左カラム（チャート＋日次データ）。min-width: 0 が無いと表の横スクロールで列幅が押し広げられる */
+.dash-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (max-width: 1280px) { .dash-grid { grid-template-columns: 1fr; } }
 
 .chart-panel { padding: 14px 16px; }
