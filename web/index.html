@@ -16,6 +16,7 @@
       <button class="tab is-active" role="tab" data-tab="register" aria-selected="true">登録</button>
       <button class="tab" role="tab" data-tab="dashboard" aria-selected="false">ダッシュボード</button>
       <button class="tab" role="tab" data-tab="export" aria-selected="false">出力</button>
+      <button class="tab" role="tab" data-tab="reports" aria-selected="false">レポート</button>
       <button class="tab" role="tab" data-tab="settings" aria-selected="false">設定</button>
     </nav>
     <div class="job-status" id="job-status" hidden>
@@ -246,6 +247,64 @@
       </div>
     </section>
 
+    <!-- ================= レポート画面（P6-6） ================= -->
+    <section class="view" id="view-reports" role="tabpanel">
+      <div class="panel">
+        <div class="panel-head row">
+          <h2>Gemini の利用状況</h2>
+          <span class="hint-inline" id="report-quota-updated"></span>
+        </div>
+        <div id="report-quota-body"></div>
+      </div>
+
+      <div class="reports-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>AI分析レポートを作成</h2>
+            <p class="hint">送るのは銘柄情報・株価とテクニカル指標・EDINETの開示（本文は含まない）だけです。需給データ（空売り残高・貸借取引残高）は送信しません。</p>
+          </div>
+          <div class="field">
+            <label class="field-label" for="report-stock-select">銘柄</label>
+            <select class="input select" id="report-stock-select" aria-label="銘柄"></select>
+          </div>
+          <div class="field">
+            <span class="field-label">期間</span>
+            <div class="segmented" id="report-days">
+              <button data-days="20">直近20日</button>
+              <button data-days="60" class="is-active">直近60日</button>
+              <button data-days="120">直近120日</button>
+            </div>
+          </div>
+          <p class="notice" id="report-unavailable" hidden></p>
+          <div class="btn-row" id="report-unavailable-actions" hidden>
+            <button class="btn btn-sm" id="report-goto-settings">設定タブへ移動</button>
+          </div>
+          <button class="btn btn-primary btn-block" id="report-run" disabled>分析を実行</button>
+          <p class="hint">AI の出力は検証されていません。投資助言ではありません。</p>
+          <p class="hint">開示は EDINET の法定開示のみです。決算短信・業績修正（TDnet）は対象外です。</p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head row">
+            <h2>生成済みレポート</h2>
+            <button class="btn" id="open-reports-folder">保存フォルダを開く</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>生成日時</th><th>銘柄</th><th>モデル</th>
+                  <th class="num">入力トークン</th><th class="num">出力トークン</th><th class="col-actions"></th>
+                </tr>
+              </thead>
+              <tbody id="report-list"></tbody>
+            </table>
+          </div>
+          <p class="empty" id="report-list-empty" hidden>まだレポートを作成していません。</p>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= 設定画面 ================= -->
     <section class="view" id="view-settings" role="tabpanel">
       <div id="settings-warnings"></div>
@@ -307,6 +366,10 @@
               <label class="field-label" for="set-gemini-model">モデル名</label>
               <input class="input" id="set-gemini-model" type="text" data-setting="gemini_model" placeholder="AI Studio で使えるモデル名を入力">
             </div>
+            <div class="field inline">
+              <button class="btn btn-sm" id="test-gemini">接続テスト</button>
+              <span class="toolbar-note" id="test-gemini-result"></span>
+            </div>
             <div class="field-grid">
               <div class="field"><label class="field-label" for="set-rpm">RPM（1分あたりリクエスト）</label><input class="input input-num" id="set-rpm" type="number" min="0" data-setting="gemini_rpm"></div>
               <div class="field"><label class="field-label" for="set-tpm">TPM（1分あたりトークン）</label><input class="input input-num" id="set-tpm" type="number" min="0" data-setting="gemini_tpm"></div>
@@ -317,6 +380,11 @@
             <p class="hint">公式ドキュメントに無料枠の数値表はありません。<a href="https://aistudio.google.com/rate-limit" target="_blank" rel="noopener">AI Studio のレート制限ページ</a>で自分のアカウントの値を確認して入力してください。RPM・TPM・RPD のいずれかが 0 の間は AI 機能は無効です。</p>
             <p class="hint">上限は API キー単位ではなく<b>プロジェクト単位</b>です。同じプロジェクトを他のツールでも使っている場合、本ツールの残量表示より早く上限に達します。</p>
             <p class="hint">無料枠では、送信した内容が Google の製品改善に使われ、人間のレビュアーが読む場合があります。</p>
+            <div class="field inline">
+              <button class="btn btn-sm" id="reset-gemini-exhausted">打ち切りフラグを手動解除</button>
+              <span class="toolbar-note" id="reset-gemini-exhausted-result"></span>
+            </div>
+            <p class="hint">429（クォータ超過）の判定は自前の見積りです。誤って打ち切り扱いになった場合はここで解除できます。</p>
           </div>
 
           <div class="panel">

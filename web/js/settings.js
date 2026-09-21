@@ -93,6 +93,24 @@ window.SettingsView = (function () {
     }
   }
 
+  // 打ち切りフラグの手動解除（SPEC §2.1.3・§2.7.2）。429 の判定は自前の見積りなので、
+  // 誤判定に備えた逃げ道として置く。解除した行数が 0 なら「そもそも打ち切りが立っていない」と伝える
+  async function resetExhausted(btn, resultEl) {
+    btn.disabled = true;
+    resultEl.classList.remove("is-ok", "is-error");
+    resultEl.textContent = "解除しています…";
+    try {
+      const { cleared } = await api.call("ai_reset_exhausted");
+      resultEl.textContent = cleared > 0 ? `打ち切りを解除しました（${cleared}件）` : "打ち切りは設定されていません";
+      resultEl.classList.add("is-ok");
+    } catch (err) {
+      resultEl.textContent = err.message;
+      resultEl.classList.add("is-error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     $("settings-save").addEventListener("click", save);
     $("view-settings").addEventListener("click", (e) => {
@@ -100,6 +118,8 @@ window.SettingsView = (function () {
       if (btn) onSecretAction(btn.closest(".secret-row"), btn.dataset.act);
     });
     $("test-edinet").addEventListener("click", () => testConnection("edinet", $("test-edinet"), $("test-edinet-result")));
+    $("test-gemini").addEventListener("click", () => testConnection("gemini", $("test-gemini"), $("test-gemini-result")));
+    $("reset-gemini-exhausted").addEventListener("click", () => resetExhausted($("reset-gemini-exhausted"), $("reset-gemini-exhausted-result")));
   });
 
   return { load };

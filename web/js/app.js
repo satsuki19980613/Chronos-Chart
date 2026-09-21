@@ -13,6 +13,8 @@
     chartSettings: loadChartSettings(),
     exportSelected: new Set(),
     exportDays: "60",
+    reportDays: "60",
+    reportSymbol: null, // レポートタブでユーザーが選び直した銘柄（未選択ならダッシュボードの銘柄を使う）
     visibleRange: null, // チャートの表示範囲 {from, to}（"YYYY-MM-DD"）。P5-4 でイベント欄の絞り込みに使う
     pendingMarkerId: null, // 直近クリックされたマーカーの id（"ev:<日付>"）。P5-5 でイベント欄の強調に使う
   };
@@ -119,6 +121,7 @@
     if (name === "register") { refreshShortAllAvailability(); refreshDisclosuresAvailability(); }
     if (name === "dashboard") openDashboard(state.currentSymbol);
     if (name === "export") loadExportFiles();
+    if (name === "reports") openReportsTab();
     if (name === "settings") SettingsView.load();
   }
 
@@ -173,6 +176,7 @@
     renderStockList();
     renderStockSelect();
     renderExportStocks();
+    renderReportStockSelect();
   }
 
   function renderStockList() {
@@ -920,6 +924,183 @@
     await loadExportFiles();
   }
 
+  // ---------- AI分析レポート（SPEC §2.7・§4.2、P6-6） ----------
+  let reportBusy = false; // 確認ダイアログを出している間などにボタンを連打されるのを防ぐ
+
+  function renderReportStockSelect() {
+    const select = $("report-stock-select");
+    const prev = select.value;
+    select.innerHTML = state.stocks
+      .map((s) => `<option value="${f.escape(s.symbol)}">${f.escape(s.code)}　${f.escape(s.name)}</option>`)
+      .join("");
+    select.disabled = state.stocks.length === 0;
+    // 選び直した銘柄 → ダッシュボードで見ている銘柄 の順に引き継ぐ（先頭の銘柄を既定にしない）
+    const preferred = [state.reportSymbol, state.currentSymbol, prev].find(
+      (sym) => sym && state.stocks.some((s) => s.symbol === sym)
+    );
+    if (preferred) select.value = preferred;
+  }
+
+  function renderReportDaysButtons() {
+    document.querySelectorAll("#report-days button").forEach((b) => {
+      b.classList.toggle("is-active", b.dataset.days === state.reportDays);
+    });
+  }
+
+  function renderReportQuota(quota) {
+    const body = $("report-quota-body");
+    if (!quota.configured) {
+      body.innerHTML = `<p class="hint">Gemini が未設定です。モデル名と RPM/TPM/RPD を設定タブで入力してください。</p>`;
+      return;
+    }
+    const stateText = quota.exhausted
+      ? `打ち切り中（${f.escape(quota.reset_at)} にリセット）`
+      : "通常";
+    body.innerHTML = `
+      <dl class="quote-stats">
+        <div><dt>モデル</dt><dd>${f.escape(quota.model)}</dd></div>
+        <div><dt>本日のリクエスト</dt><dd>${f.num(quota.used.requests)} / ${f.num(quota.limits.rpd)}</dd></div>
+        <div><dt>RPD残り</dt><dd>${quota.remaining.rpd === null ? "—" : f.num(quota.remaining.rpd)}</dd></div>
+        <div><dt>TPM残り</dt><dd>${quota.remaining.tpm === null ? "—" : f.num(quota.remaining.tpm)}</dd></div>
+        <div><dt>状態</dt><dd>${stateText}</dd></div>
+      </dl>
+      <p class="hint">${f.escape(quota.note)}</p>`;
+  }
+
+  // 未設定・打ち切り中のときの導線（SPEC §2.1.3・§6）。理由はツールチップではなく画面の文字で出し、
+  // 設定タブへのボタンを添える。実行ボタンの活性・不活性もここでまとめて決める
+  function renderReportAvailability(quota) {
+    const note = $("report-unavailable");
+    const actions = $("report-unavailable-actions");
+    let message = "";
+    if (!quota.configured) {
+      message = "Gemini のモデル名と RPM/TPM/RPD を設定タブで入力してください。";
+    } else if (quota.exhausted) {
+      message = `本日の無料枠を使い切りました（${quota.reset_at} にリセットされます）。`;
+    }
+    note.textContent = message;
+    note.hidden = !message;
+    actions.hidden = !message;
+    $("report-run").disabled = Boolean(message) || reportBusy || state.stocks.length === 0;
+  }
+
+  // Gemini の利用状況（タブ上部）。タブを開いたときと分析完了後に更新する
+  async function refreshReportQuota() {
+    let quota;
+    try {
+      quota = await api.call("ai_quota");
+    } catch (err) {
+      $("report-quota-body").innerHTML = `<p class="hint">${f.escape(err.message)}</p>`;
+      return;
+    }
+    renderReportQuota(quota);
+    renderReportAvailability(quota);
+    $("report-quota-updated").textContent = `更新: ${new Date().toLocaleTimeString("ja-JP")}`;
+  }
+
+  async function loadReports() {
+    let reports;
+    try {
+      reports = await api.call("list_reports");
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    $("report-list-empty").hidden = reports.length > 0;
+    $("report-list").innerHTML = reports.map((r) => {
+      const action = r.exists
+        ? `<button class="btn btn-sm" data-action="open-report" data-id="${r.id}">開く</button>`
+        : `<span class="muted">ファイルが見つかりません</span> <button class="btn btn-sm" disabled>開く</button>`;
+      return `
+        <tr>
+          <td class="muted">${f.escape(r.created_at)}</td>
+          <td class="symbol">${f.escape(r.symbol)}</td>
+          <td>${f.escape(r.model)}</td>
+          <td class="num">${f.num(r.in_tokens)}</td>
+          <td class="num">${f.num(r.out_tokens)}</td>
+          <td class="actions">${action}</td>
+        </tr>`;
+    }).join("");
+  }
+
+  async function onReportListClick(e) {
+    const btn = e.target.closest("button[data-action='open-report']");
+    if (!btn) return;
+    try {
+      await api.call("open_report", Number(btn.dataset.id));
+    } catch (err) {
+      toast(err.message, "error", 8000);
+    }
+  }
+
+  // 確認ダイアログの文面（SPEC §2.7.1）。モデル名・入力トークンの見積り・本日の残量とその注記・
+  // 送信データの種別・「需給データは送らない」の1行を必ず含める
+  function buildReportConfirmMessage(est) {
+    const q = est.quota;
+    const rpdText = q.remaining.rpd === null ? "—" : `${f.num(q.remaining.rpd)}件`;
+    const tpmText = q.remaining.tpm === null ? "—" : `${f.num(q.remaining.tpm)}トークン`;
+    const sendsText = est.sends.map((s) => `・${s}`).join("\n");
+    return (
+      `${est.name}（${est.symbol}）を直近${est.days}日分で分析します。\n\n` +
+      `使用モデル: ${est.model}\n` +
+      `入力トークンの見積り: 約${f.num(est.input_tokens)}トークン\n` +
+      `本日の残量: RPD残り ${rpdText} / TPM残り ${tpmText}\n` +
+      `（${q.note}）\n\n` +
+      `送信されるデータ:\n${sendsText}\n` +
+      "・需給データ（空売り残高・貸借取引残高）は送信しません\n\n" +
+      "実行しますか？（実行中はいつでも中断できます）"
+    );
+  }
+
+  // 「分析を実行」→ ai_estimate で見積り → 確認ダイアログ → ai_analyze ジョブ、の流れ（SPEC §2.7.1）。
+  // ai_estimate 自体はエラーにならず can_run/reason で返るので、false のときは確認を出さずに理由を伝える
+  async function runReportAnalyze() {
+    if (reportBusy) return;
+    const symbol = $("report-stock-select").value;
+    if (!symbol) return;
+    const days = Number(state.reportDays);
+    reportBusy = true;
+    $("report-run").disabled = true;
+    try {
+      let est;
+      try {
+        est = await api.call("ai_estimate", symbol, days);
+      } catch (err) {
+        toast(err.message, "error", 8000);
+        return;
+      }
+      if (!est.can_run) {
+        toast(est.reason || "現在は実行できません", "warn", 8000);
+        return;
+      }
+      if (!confirm(buildReportConfirmMessage(est))) return;
+
+      let job;
+      try {
+        job = await Jobs.run("ai_analyze", { symbol, days });
+      } catch (err) {
+        toast(err.message, "error", 8000);
+        return;
+      }
+      if (job.state === "cancelled") {
+        toast("AI分析を中断しました");
+      } else {
+        toast(job.result?.summary || "AI分析レポートを作成しました", "info", 8000);
+      }
+      await loadReports();
+    } finally {
+      reportBusy = false;
+      await refreshReportQuota();
+    }
+  }
+
+  async function openReportsTab() {
+    renderReportStockSelect();
+    renderReportDaysButtons();
+    await refreshReportQuota();
+    await loadReports();
+  }
+
   // ---------- 初期化 ----------
   function bind() {
     document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
@@ -983,6 +1164,20 @@
     };
     $("open-csv").addEventListener("click", openFolder("open_csv_folder"));
     $("open-output").addEventListener("click", openFolder("open_output_folder"));
+    $("open-reports-folder").addEventListener("click", openFolder("open_reports_folder"));
+
+    $("report-days").addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      state.reportDays = btn.dataset.days;
+      renderReportDaysButtons();
+    });
+    $("report-stock-select").addEventListener("change", (e) => {
+      state.reportSymbol = e.target.value;
+    });
+    $("report-run").addEventListener("click", runReportAnalyze);
+    $("report-list").addEventListener("click", onReportListClick);
+    $("report-goto-settings").addEventListener("click", () => switchTab("settings"));
 
     $("export-stocks").addEventListener("click", toggleExportRow);
     $("export-check-all").addEventListener("change", (e) => {

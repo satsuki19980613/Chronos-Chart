@@ -95,7 +95,7 @@ RESEARCH.md / DESIGN.md はレビュー前の記述を含む。**食い違う場
 | `gemini_tpm` | int | 0 | 1分あたりトークン上限 |
 | `gemini_rpd` | int | 0 | 1日あたりリクエスト上限 |
 | `gemini_max_output_tokens` | int | 8192 | 出力トークン上限（thinking トークンもこの枠を消費する） |
-| `gemini_thinking_budget` | int | 1024 | thinking の予算。モデル系列により指定方法が異なるため、適用方法は P6-1 で確定 |
+| `gemini_thinking_budget` | int | 1024 | thinking の予算。`types.ThinkingConfig(thinking_budget=N)` で渡す。`0` で thinking 無し（§2.7.2a） |
 | `scrape_interval_sec` | int | 10 | スクレイピングのリクエスト間隔（秒）。下限 5 |
 | `scrape_contact` | str | 空 | User-Agent に含める連絡先 |
 | `short_recheck_hours` | int | 24 | 同一銘柄の空売り残高を再取得しない時間（一括・自動取得に適用） |
@@ -130,7 +130,8 @@ RESEARCH.md / DESIGN.md はレビュー前の記述を含む。**食い違う場
   SQLite の WAL ファイルと同期ツールの相性が悪いため、`CHRONOS_DATA_DIR` で同期対象外の場所を指定するよう案内する）
 - Gemini 打ち切りフラグの**手動解除ボタン**（§2.7.2）
 - 接続テストボタン（EDINET / Gemini）。EDINET は `documents.json` を1回、Gemini は最小プロンプトで疎通確認。
-  **実装は各クライアントの完成後**（EDINET は P4、Gemini は P6。それまでボタンは出さない）
+  Gemini の接続テストは**上限が未設定でも実行できる**ようにする（上限を入れる前に疎通を確かめたいため）。
+  ただし実際に1回送信するので `ai_usage.requests` には必ず加算する（§2.7.2）
 
 #### 2.1.4 別 PC への移行
 
@@ -705,6 +706,25 @@ API（§4.2）:
   - この形式は公式に保証されたものではない。P6-1 で実物を1回採取して確認し、フィールドの読み取りは欠損に耐える実装にする
   - 誤判定に備え、設定タブに**打ち切りフラグの手動解除**を置く
 
+#### 2.7.2a SDK の実挙動（実レスポンスで確認済み。旧 §9-4）
+
+`google-genai` **2.24.0** で実際に採取して確認した（2026-09-21・P6-1）。SDK を更新したらここを再確認すること。
+
+| 項目 | 実際 |
+|---|---|
+| 入力見積り | `client.models.count_tokens(...).total_tokens`（`total_token_count` **ではない**） |
+| 使用量 | `response.usage_metadata` の `prompt_token_count` / `candidates_token_count` / `thoughts_token_count` / `total_token_count` |
+| thinking の扱い | `total_token_count` = `prompt` + `candidates` + `thoughts`。**枠を消費する出力側は `candidates + thoughts`**。thinking を使わなかった応答では `thoughts_token_count` が無い（None） |
+| 終了理由 | `response.candidates[0].finish_reason` は**列挙型**（`FinishReason.STOP` / `FinishReason.MAX_TOKENS`）。文字列で扱うなら `.name` を見る |
+| `MAX_TOKENS` | **`response.text` には途中までの文字列が入る**。パースの前に必ず `finish_reason` を見る（§2.7.5 の1番） |
+| thinking の指定 | `types.ThinkingConfig(thinking_budget=<int>)` を **gemini-2.5 系・gemini-3 系のどちらも受け付けた**（2.5-flash / 3.5-flash / 3-flash-preview で確認）。`thinking_level` は使わない |
+| エラー詳細 | `google.genai.errors.ClientError` の `.details` に**レスポンス JSON そのもの**が入る（`.code` / `.status` / `.message` も持つ） |
+| 要求のタイムアウト | `types.HttpOptions(timeout=...)` の単位は**ミリ秒** |
+
+- **429 の実レスポンスは採取していない。** 故意に無料枠を使い切らないため。したがって
+  `QuotaFailure` / `RetryInfo` の読み取りは**欠損にすべて耐える**実装にし、判別できなければ安全側（打ち切り）に倒す（§2.7.2 の表）
+- 確認に使ったのは `models.list` 1回・`count_tokens` 3回・`generate_content` 5回
+
 #### 2.7.3 送信データ（厳密に定義する）
 
 **送るもの**
@@ -773,7 +793,10 @@ class AnalysisReport(BaseModel):
 3. 失敗したら、**バリデーションエラーの本文をプロンプトに添えて再依頼**する
    - 追加文: 「前回の出力は次の検証エラーで失敗した: {エラー}。スキーマに厳密に従って再生成せよ」
 4. 再依頼は**最大2回**。毎回 §2.7.2 のガードを通す。3回目の失敗、またはガードで止まった場合は中止し、
-   生のレスポンスを `data/logs/` に保存してユーザーに通知する
+   生のレスポンスを `data/logs/` に保存してユーザーに通知する（**プロンプトは保存しない**）
+5. この流れは `app/ai/analyze.py` が指揮する。`app/ai/client.py` は
+   **「1回の呼び出しにつき送信は1回だけ」**に保ち、再送・再依頼のループを同居させない
+   （同居させると、送信回数と `ai_usage.requests` の対応が読み取れなくなるため）
 
 #### 2.7.6 レポート出力
 
@@ -1085,10 +1108,11 @@ app/
 ├── events.py            [新] disclosures → チャートイベント変換（足のある日付への寄せ）
 └── ai/                  [新]
     ├── __init__.py
-    ├── client.py          google-genai ラッパ（429 の判別・再送）
+    ├── client.py          google-genai ラッパ（**1呼び出し＝1送信**。429 の判別まで）
     ├── quota.py           ai_usage によるクォータ管理
     ├── schema.py          Pydantic 出力スキーマ
     ├── prompt.py          プロンプト組み立て（需給を含めない）
+    ├── analyze.py         実行の指揮（見積り・検証・再依頼・429 の再送）
     └── report.py          Jinja2 で単一HTML生成
 templates/               [新]
 └── report.html.j2
@@ -1199,7 +1223,9 @@ data/                    .gitignore 済み
 | # | 項目 | 確定方法 | 関連タスク |
 |---|---|---|---|
 | 3 | Gemini 無料枠のモデル別 RPM/TPM/RPD | ユーザーが AI Studio で確認して設定画面に入力 | 設計で吸収済み |
-| 4 | `response.usage_metadata` の正確なフィールド名、429 エラー詳細の実際の構造、thinking 予算の指定方法 | 実レスポンスを1回採取 | PLAN P6-1 |
+
+解消済み（P6-1 / 2026-09-21）: 旧 §9-4 `usage_metadata` のフィールド名・429 エラー詳細の構造・thinking 予算の指定方法
+→ §2.7.2a に実測を記載。**429 の実レスポンスだけは採取していない**（無料枠を故意に使い切らないため）ので、読み取りは欠損に耐える実装にする。
 
 解消済み（版 1.0 → 1.1）: 日証金のファイル名規則と過去分の可否（固定名・最新のみ）、JPX 週次残高の採否（採用しない）、
 `disclosure_facts` のホワイトリスト（機能ごと §11 へ移動）。
@@ -1340,3 +1366,5 @@ PDF 一時取得方式への切り替えは不要になった。
 | 2026-09-20 | 1.1 | **銘柄の登録直後に開示取得の実行を尋ねる**と決めた（§2.4.4） | P8-2。ユーザーの実機テストで、株価1年分の銘柄を登録しても開示が数日分しか入らないと判明。登録時はキャッシュ再走査のみ・自動更新は直近30日までなので、新しく登録した銘柄の過去の開示を取る導線が無かった |
 | 2026-09-20 | 1.1 | **報告義務消失の備考の既知の文言に `ポジション解消` を追加**（§2.2.2・§2.2.3） | P8-5。2026-09-20 に実サイト（karauri.net の 9984）を1回取得したところ、備考欄に `報告義務消失` ではなく `ポジション解消` という文言があった。`消失` を含まないため未知の文言として警告が出ていた（合計からは `ratio < 0.5` 側の条件で除外できていた） |
 | 2026-09-21 | 1.2 | **開示のモーダルと本文のテキスト表示を追加**（§2.4.8・§4.2 の `get_disclosure_text`） | ユーザー要望「マーカーを押したらモーダルで中身を見たい。テキストならテキスト、出せないものはリンク」。規約上 API 経由の取得は許されている（§2.4.7）ので `documents/<docID>?type=1` の ZIP を使い、メモリ上で展開して表示する（保存はしない）。実測で 有報 1.2MB・臨報 14KB だったので上限を ZIP 20MB・テキスト20万文字に置いた |
+| 2026-09-21 | 1.2 | **Gemini SDK の実挙動を §2.7.2a として追記**（`count_tokens().total_tokens`・`usage_metadata` の4項目・`finish_reason` は列挙型・`MAX_TOKENS` でも `text` は入る・`thinking_budget` は 2.5/3 系のどちらも可・`HttpOptions.timeout` はミリ秒）。§9-4 を解消 | P6-1。実レスポンスを採取して確認した。429 だけは無料枠を故意に使い切らないため未採取で、読み取りは欠損に耐える実装とする |
+| 2026-09-21 | 1.2 | **AI 分析の実行フローを `app/ai/analyze.py` に分離**（§2.7.5 に5番を追加、§5 のファイル構成）。`client.py` は「1呼び出し＝1送信」に固定する | P6-4。SPEC §5 では再依頼を `ai/client.py` に置く構成だったが、再送ループを同居させると「送信のたびに `ai_usage.requests` を加算する」という不変条件（§2.7.2）がコード上で追えなくなる |

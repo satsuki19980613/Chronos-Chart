@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>AI分析レポート {{ name }}（{{ symbol }}）</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --muted: #5b6472;
+    --border: #d8dce3;
+    --bg-soft: #f5f6f8;
+    --bull: #b3261e;
+    --bear: #1b5e20;
+    --neutral: #5b6472;
+    --accent: #274690;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+    color: var(--fg);
+    background: #fff;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px 20px 60px;
+    line-height: 1.7;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  h2 {
+    font-size: 1.15rem;
+    margin-top: 2.2em;
+    padding-bottom: 4px;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1rem; margin-top: 1.4em; margin-bottom: 0.3em; }
+  header.report-header {
+    border: 1px solid var(--border);
+    background: var(--bg-soft);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 8px;
+  }
+  header.report-header dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 16px;
+    margin: 0;
+  }
+  header.report-header dt { color: var(--muted); white-space: nowrap; }
+  header.report-header dd { margin: 0; }
+  .verdict-box {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 28px;
+    align-items: baseline;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-top: 0.6em;
+  }
+  .verdict-box .verdict-value { font-size: 1.3rem; font-weight: bold; }
+  .verdict-box .verdict-value.bullish { color: var(--bull); }
+  .verdict-box .verdict-value.bearish { color: var(--bear); }
+  .verdict-box .verdict-value.neutral { color: var(--neutral); }
+  .summary-text { font-size: 1.02rem; }
+  .caveat { color: var(--muted); font-size: 0.85rem; margin-top: 0.4em; }
+  ul.evidence-list, ul.plain-list { margin: 0.4em 0; padding-left: 1.4em; }
+  ul.evidence-list li, ul.plain-list li { margin-bottom: 0.3em; }
+  table.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    margin-top: 0.6em;
+  }
+  table.data-table th, table.data-table td {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.data-table th { background: var(--bg-soft); }
+  .status-bull { color: var(--bull); font-weight: bold; }
+  .status-bear { color: var(--bear); font-weight: bold; }
+  .status-neutral { color: var(--neutral); }
+  .withdrawn-tag {
+    display: inline-block;
+    color: #fff;
+    background: var(--muted);
+    border-radius: 3px;
+    font-size: 0.78rem;
+    padding: 1px 6px;
+    margin-right: 6px;
+  }
+  .empty-note { color: var(--muted); }
+  section.disclaimer {
+    margin-top: 2.4em;
+    padding-top: 1em;
+    border-top: 2px solid var(--border);
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  section.disclaimer ul { padding-left: 1.2em; }
+  section.disclaimer li { margin-bottom: 0.5em; }
+  @media print {
+    body { max-width: none; }
+    h2 { break-after: avoid; }
+    table.data-table { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<header class="report-header">
+  <h1>AI分析レポート</h1>
+  <dl>
+    <dt>銘柄名</dt><dd>{{ name }}</dd>
+    <dt>証券コード</dt><dd>{{ symbol }}</dd>
+    <dt>市場</dt><dd>{{ exchange }}</dd>
+    <dt>通貨</dt><dd>{{ currency }}</dd>
+    <dt>対象期間</dt><dd>直近{{ days }}日</dd>
+    <dt>生成日時</dt><dd>{{ generated_at }}</dd>
+    <dt>モデル</dt><dd>{{ model }}</dd>
+  </dl>
+</header>
+
+<h2 id="summary">総括・判定</h2>
+<p class="summary-text">{{ report.summary }}</p>
+<div class="verdict-box">
+  <div>
+    <div>総合判定</div>
+    <div class="verdict-value {{ report.verdict }}">{{ verdict_label }}</div>
+  </div>
+  <div>
+    <div>確信度（自己申告）</div>
+    <div class="verdict-value">{{ confidence_label }}</div>
+  </div>
+</div>
+<p class="caveat">
+  ※ 上記の判定・確信度は AI モデルによる自己申告であり、較正された確率ではありません。
+  数値としての精度を保証するものではないため、参考情報としてのみ扱ってください。
+</p>
+
+<h2 id="technical">テクニカルの観点</h2>
+<p>{{ report.technical.assessment }}</p>
+<ul class="evidence-list">
+  {% for item in report.technical.evidence %}
+  <li>{{ item }}</li>
+  {% endfor %}
+</ul>
+
+<h2 id="disclosure-view">開示の観点</h2>
+<p>{{ report.disclosure.assessment }}</p>
+<ul class="evidence-list">
+  {% for item in report.disclosure.evidence %}
+  <li>{{ item }}</li>
+  {% endfor %}
+</ul>
+
+<h2 id="risks">リスク</h2>
+{% if report.risks %}
+<ul class="plain-list">
+  {% for item in report.risks %}
+  <li>{{ item }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty-note">挙げられたリスクはありません。</p>
+{% endif %}
+
+<h2 id="watch-points">注目点</h2>
+{% if report.watch_points %}
+<ul class="plain-list">
+  {% for item in report.watch_points %}
+  <li>{{ item }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty-note">挙げられた注目点はありません。</p>
+{% endif %}
+
+<h2 id="indicators">根拠となった指標値</h2>
+{% if latest_rows %}
+<table class="data-table">
+  <thead>
+    <tr><th>指標</th><th>判定</th><th>値</th><th>備考</th></tr>
+  </thead>
+  <tbody>
+    {% for row in latest_rows %}
+    <tr>
+      <td>{{ row.label }}</td>
+      <td class="status-{{ row.status_class }}">{{ row.status_label }}</td>
+      <td>{{ row.value_display }}</td>
+      <td>{{ row.note }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-note">指標の判定はありません（データ不足）。</p>
+{% endif %}
+
+<h3>期間内のシグナル</h3>
+{% if signal_rows %}
+<table class="data-table">
+  <thead>
+    <tr><th>日付</th><th>方向</th><th>シグナル</th></tr>
+  </thead>
+  <tbody>
+    {% for sig in signal_rows %}
+    <tr>
+      <td>{{ sig.date }}</td>
+      <td>{{ sig.direction_label }}</td>
+      <td>{{ sig.label }}（{{ sig.short }}）</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-note">期間内のシグナルはありません。</p>
+{% endif %}
+
+<h2 id="disclosures">開示一覧</h2>
+{% if disclosures %}
+<table class="data-table">
+  <thead>
+    <tr><th>提出日時</th><th>種別</th><th>関係</th><th>概要</th><th>提出事由</th></tr>
+  </thead>
+  <tbody>
+    {% for d in disclosures %}
+    <tr>
+      <td>{{ d['submit_at'] }}</td>
+      <td>{% if d['withdrawn'] %}<span class="withdrawn-tag">取下げ済み</span>{% endif %}{{ d['label'] }}</td>
+      <td>{{ d['role'] }}</td>
+      <td>{{ d['description'] }}</td>
+      <td>{{ d['reason'] }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-note">期間内の開示はありません。</p>
+{% endif %}
+
+<section class="disclaimer">
+  <h2>免責事項</h2>
+  <ul>
+    <li>本レポートは機械的なデータ分析の結果であり、投資助言ではない。売買の推奨・勧誘を目的とするものではなく、投資判断は利用者自身の責任で行うこと。</li>
+    <li>本レポートの分析内容（総括・判定・根拠等）は AI（生成モデル）の出力をそのまま記載したものであり、本アプリはその内容を検証していない。誤りや不正確な記述を含む可能性がある。</li>
+    <li>
+      データの出典: 株価は Yahoo Finance から取得したものを、法定開示は金融庁 EDINET が公開する書類情報を、
+      いずれも本アプリが加工して利用している。
+    </li>
+    <li>開示情報は金融商品取引法に基づく EDINET の法定開示のみを対象としており、決算短信・業績修正（TDnet の適時開示）は分析対象に含まれていない。</li>
+  </ul>
+</section>
+
+</body>
+</html>
