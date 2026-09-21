@@ -451,6 +451,55 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
         """
     )
 
+
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """財務数値（有報・半期報の「主要な経営指標等の推移」。SPEC §2.9・§3）。
+
+    1行＝(銘柄, 会計期間の末日, 項目, 連結/単体) の1数値。訂正報告書は提出日が新しいほうで
+    上書きするが、訂正に載っていない項目は消さない（SPEC §2.9.5）ので、行単位の UPSERT にする。
+    銘柄を消したら CASCADE で消える（再取得できるデータなので残す必要がない）。
+
+    `period_type` は 'FY'（通期）か 'HY'（中間期）。半期報告書から取った中間期の値を通期の系列に
+    混ぜると成長率が滅茶苦茶になるので、読み出しで必ず分ける（SPEC §2.9.4a）。
+    主キーには入れない: 中間期末と事業年度末が同じ日付になることはないため衝突しない。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS financials (
+            symbol      TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+            period_end  TEXT NOT NULL,
+            item        TEXT NOT NULL,
+            value       REAL,
+            unit        TEXT,
+            basis       TEXT NOT NULL,
+            standard    TEXT,
+            period_type TEXT NOT NULL DEFAULT 'FY',
+            doc_id      TEXT NOT NULL,
+            submit_at   TEXT NOT NULL,
+            PRIMARY KEY (symbol, period_end, item, basis)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_financials_symbol ON financials(symbol, period_end)"
+    )
+    # どの書類まで取り込んだかの記録。未取得の有報・半期報だけを取るのに使う（SPEC §2.9.1）。
+    # 取り込めなかった書類も結果を残し、毎回取り直さないようにする。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS financial_docs (
+            symbol      TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+            doc_id      TEXT NOT NULL,
+            submit_at   TEXT NOT NULL,
+            period_end  TEXT,
+            result      TEXT NOT NULL,
+            fetched_at  TEXT NOT NULL,
+            PRIMARY KEY (symbol, doc_id)
+        )
+        """
+    )
+
+
 # (バージョン, 移行関数)。追加するときは末尾に足し、既存の関数は書き換えない。
 # 貸借取引残高（margin_balances）は再取得できないので、どの移行でも DROP しないこと。
 MIGRATIONS = [
@@ -459,4 +508,5 @@ MIGRATIONS = [
     (3, _migrate_v3),
     (4, _migrate_v4),
     (5, _migrate_v5),
+    (6, _migrate_v6),
 ]

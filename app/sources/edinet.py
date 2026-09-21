@@ -446,3 +446,376 @@ def fetch_document_text(
     if len(_document_cache) > _DOCUMENT_CACHE_MAX:
         _document_cache.popitem(last=False)  # 一番古いものを落とす
     return result
+
+
+# ---------- 財務数値（type=5 CSV）の取得・パース（P11-1。SPEC §2.9） ----------
+
+FINANCIAL_DOCUMENT_MAX_BYTES = DOCUMENT_MAX_BYTES  # 実測: 有報 ZIP は最大でも 248KB 程度。type=1 と同じ上限で足りる
+
+# 本体 CSV の見分け方（SPEC §2.9.2、実測 2026-09-21）。ZIP の中は `XBRL_TO_CSV/` 配下で、
+# 有報は `jpcrp<6桁>-asr-...`、半期報は `jpcrp<6桁>-ssr-...`。
+# 半期報の実物は `jpcrp040300-ssr-001_...` だった（SPEC に書かれている `jpcrp050000-ssr` は誤り。
+# メインが SPEC を直す前提で、ここでは実測どおりに実装する）。監査報告書 `jpaud-*` は対象外。
+_FINANCIAL_CSV_MEMBER_RE = re.compile(r"^jpcrp\d{6}-(asr|ssr)-")
+
+
+def fetch_financial_csv(
+    client: HttpClient, doc_id: str, api_key: str, cancel: threading.Event | None = None
+) -> bytes:
+    """財務数値の書類取得 API（`documents/<docID>?type=5`）から ZIP のバイト列を取る（SPEC §2.9.1）。
+
+    `fetch_document_zip`（type=1）とほぼ同じ処理だが、type=1 の既存の挙動を変えないために
+    あえて共通化せず複製している。`doc_id` の英数字チェック・`DocumentTooLarge` は type=1 と同じ。
+    この関数自体にはプロセス内キャッシュを付けない（キャッシュは表示用の `fetch_document_text` だけのもの）。
+    """
+    api_key = (api_key or "").strip()
+    if not api_key:
+        raise UserFacingError("EDINET の API キーが設定されていません")
+    if not doc_id or not _DOC_ID_RE.match(doc_id):
+        raise UserFacingError(f"不正な書類番号です: {doc_id!r}")
+
+    url = DOCUMENT_URL.format(doc_id=doc_id)
+    params = {"type": 5, "Subscription-Key": api_key}
+    try:
+        response = client.get(
+            url,
+            params=params,
+            cancel=cancel,
+            read_timeout=DOCUMENT_READ_TIMEOUT,
+            max_bytes=FINANCIAL_DOCUMENT_MAX_BYTES,
+        )
+    except ResponseTooLarge as exc:
+        raise DocumentTooLarge(exc.size_bytes) from None
+    return response.content
+
+
+# 要素ID（`jpcrp_cor:` を除く）→ (item, is_fallback)。
+# `is_fallback=True` は「同じ item に他の要素IDが当たっていれば、そちらを優先する」印
+# （メインの指示: revenue の `OperatingRevenue1`、net_income の `NetIncomeLoss` の2つだけ）。
+# 表に無い要素IDは黙って捨てる（メインの指示）。
+_ELEMENT_ITEMS: dict[str, tuple[str, bool]] = {
+    # ---- 日本基準・共通 ----
+    "NetSalesSummaryOfBusinessResults": ("revenue", False),
+    "OperatingRevenue1SummaryOfBusinessResults": ("revenue", True),
+    "OrdinaryIncomeLossSummaryOfBusinessResults": ("ordinary_income", False),
+    "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults": ("net_income", False),
+    "NetIncomeLossSummaryOfBusinessResults": ("net_income", True),
+    "ComprehensiveIncomeSummaryOfBusinessResults": ("comprehensive_income", False),
+    "NetAssetsSummaryOfBusinessResults": ("net_assets", False),
+    "TotalAssetsSummaryOfBusinessResults": ("total_assets", False),
+    "NetAssetsPerShareSummaryOfBusinessResults": ("bps", False),
+    "BasicEarningsLossPerShareSummaryOfBusinessResults": ("eps", False),
+    "DilutedEarningsPerShareSummaryOfBusinessResults": ("diluted_eps", False),
+    "EquityToAssetRatioSummaryOfBusinessResults": ("equity_ratio", False),
+    "RateOfReturnOnEquitySummaryOfBusinessResults": ("roe", False),
+    "PriceEarningsRatioSummaryOfBusinessResults": ("per", False),
+    "PayoutRatioSummaryOfBusinessResults": ("payout_ratio", False),
+    "NetCashProvidedByUsedInOperatingActivitiesSummaryOfBusinessResults": ("operating_cf", False),
+    "NetCashProvidedByUsedInInvestingActivitiesSummaryOfBusinessResults": ("investing_cf", False),
+    "NetCashProvidedByUsedInFinancingActivitiesSummaryOfBusinessResults": ("financing_cf", False),
+    "CashAndCashEquivalentsSummaryOfBusinessResults": ("cash_and_equivalents", False),
+    "CapitalStockSummaryOfBusinessResults": ("capital_stock", False),
+    "TotalNumberOfIssuedSharesSummaryOfBusinessResults": ("shares_outstanding", False),
+    "DividendPaidPerShareSummaryOfBusinessResults": ("dps", False),
+    # ---- IFRS ----
+    "RevenueIFRSSummaryOfBusinessResults": ("revenue", False),
+    "ProfitLossBeforeTaxIFRSSummaryOfBusinessResults": ("pretax_income", False),
+    "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": ("net_income", False),
+    "ComprehensiveIncomeAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": (
+        "comprehensive_income",
+        False,
+    ),
+    "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults": ("equity", False),
+    "TotalAssetsIFRSSummaryOfBusinessResults": ("total_assets", False),
+    # 罠: 要素IDは「自己資本比率」に見えるが、実物の項目名は「１株当たり親会社所有者帰属持分（IFRS）」
+    # （単位 `JPYPerShares`）。メインが実測で確認済み（SoftBank グループ有報）。equity_ratio に
+    # 入れると値の桁が全く合わなくなるので、必ず bps に割り当てる。
+    "EquityToAssetRatioIFRSSummaryOfBusinessResults": ("bps", False),
+    "RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults": ("equity_ratio", False),
+    "RateOfReturnOnEquityIFRSSummaryOfBusinessResults": ("roe", False),
+    "PriceEarningsRatioIFRSSummaryOfBusinessResults": ("per", False),
+    "BasicEarningsLossPerShareIFRSSummaryOfBusinessResults": ("eps", False),
+    "DilutedEarningsLossPerShareIFRSSummaryOfBusinessResults": ("diluted_eps", False),
+    "CashFlowsFromUsedInOperatingActivitiesIFRSSummaryOfBusinessResults": ("operating_cf", False),
+    "CashFlowsFromUsedInInvestingActivitiesIFRSSummaryOfBusinessResults": ("investing_cf", False),
+    "CashFlowsFromUsedInFinancingActivitiesIFRSSummaryOfBusinessResults": ("financing_cf", False),
+    "CashAndCashEquivalentsIFRSSummaryOfBusinessResults": ("cash_and_equivalents", False),
+    # ---- 米国基準（未観測。docs/research/xbrl-edinet.md からの推定。実物での確認はまだ無い） ----
+    "RevenuesUSGAAPSummaryOfBusinessResults": ("revenue", False),
+    "NetIncomeLossAttributableToOwnersOfParentUSGAAPSummaryOfBusinessResults": ("net_income", False),
+    "TotalAssetsUSGAAPSummaryOfBusinessResults": ("total_assets", False),
+}
+
+_ACCOUNTING_STANDARD_MAP = {
+    "japan gaap": "jgaap",
+    "ifrs": "ifrs",
+    "us gaap": "usgaap",
+}
+
+# 発行体そのものの数字（会社の株式数・資本金・1株配当・配当性向）は「提出会社の状況」にしかなく、
+# 連結側の表には存在しない（IFRS・日本基準とも実測）。連結を採用していてもこれらだけは単体側から補う。
+_NONCONSOLIDATED_ONLY_ITEMS = {"dps", "payout_ratio", "shares_outstanding", "capital_stock"}
+
+# `pure` 単位を100倍して `%` にする item（自己資本比率・ROE・配当性向。実測値で確認済み）。
+# PER も `pure` だが100倍しない（実測: 11.7 = 11.7倍）。
+_PERCENT_ITEMS = {"roe", "equity_ratio", "payout_ratio"}
+
+_NONCONSOLIDATED_SUFFIX = "_NonConsolidatedMember"
+
+# 接尾辞なしのコンテキストID（連結・全社）。`Prior([1-4])` の数字が取れれば N 期前
+_YEAR_CONTEXT_RE = re.compile(r"^(?:Current|Prior([1-4]))Year(?:Duration|Instant)$")
+# 半期報の当期・前期中間期
+_INTERIM_CONTEXT_RE = re.compile(r"^(Prior1)?Interim(?:Duration|Instant)$")
+
+# 値が無い行の印。全角ハイフン（U+FF0D）が実物での表記（SPEC §2.9 補足。メインの実測）。
+# 素朴な半角ハイフンや空文字も念のため同じ扱いにする。
+_MISSING_FINANCIAL_VALUE_TOKENS = {"－", "-", ""}
+
+
+def _last_day_of_month(year: int, month: int) -> int:
+    """`calendar` に依存せず、月末日を返す（このファイルの他の関数と同じく標準ライブラリのみで書く）。"""
+    if month == 2:
+        is_leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
+        return 29 if is_leap else 28
+    if month in (4, 6, 9, 11):
+        return 30
+    return 31
+
+
+def _shift_fiscal_year_end(base: str, years_back: int) -> str | None:
+    """`base`（'YYYY-MM-DD'）の `years_back` 年前を、月末を保ったまま返す。
+
+    うるう年でずれるのを防ぐため：`base` がその月の末日なら、結果もその月の末日にする
+    （例: 2026-02-28 の2年前は 2024-02-29。メインの指示・SPEC §2.9 補足のテスト事例）。
+    `base` が読めない・不正なときは None（呼び出し側がその行を捨てる）。
+    """
+    try:
+        year_s, month_s, day_s = base.split("-")
+        year, month, day = int(year_s), int(month_s), int(day_s)
+    except (AttributeError, ValueError):
+        return None
+    new_year = year - years_back
+    if new_year < 1:
+        return None
+    if day == _last_day_of_month(year, month):
+        new_day = _last_day_of_month(new_year, month)
+    else:
+        new_day = day
+    return f"{new_year:04d}-{month:02d}-{new_day:02d}"
+
+
+def _clean_financial_value(raw: str | None) -> float | None:
+    """`値` 列を float にする。無い・読めない行は None（呼び出し側が行ごと捨てる）。"""
+    if raw is None:
+        return None
+    text = raw.strip()
+    if text in _MISSING_FINANCIAL_VALUE_TOKENS:
+        return None
+    try:
+        return float(text.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _normalize_financial_unit(unit_id: str, item: str) -> tuple[str, float] | None:
+    """`ユニットID` を出力用の `(unit, 倍率)` にする。対象外の組み合わせは None（行を捨てる）。
+
+    `単位` 列は空のことがある実測のため見ない。`pure` は比率系（ROE・自己資本比率・配当性向）
+    だけ100倍して `%` にし、PER は100倍しない（実測値で確認済み。SPEC §2.9 補足）。
+    """
+    if unit_id == "JPY":
+        return "JPY", 1.0
+    if unit_id == "JPYPerShares":
+        return "JPY/share", 1.0
+    if unit_id == "shares":
+        return "shares", 1.0
+    if unit_id == "pure":
+        if item in _PERCENT_ITEMS:
+            return "%", 100.0
+        if item == "per":
+            return "times", 1.0
+        log.warning("想定外の item に pure 単位の行がありました（item=%s）。行を捨てます", item)
+        return None
+    return None
+
+
+def _resolve_financial_context(
+    ctx: str, doc_period_type: str, fy_base: str | None, interim_end: str | None, prior_interim_end: str | None
+) -> tuple[str, str] | None:
+    """接尾辞を除いたコンテキストIDから `(period_end, period_type)` を決める（SPEC §2.9.4）。
+
+    対象外のコンテキスト（セグメント別など、下の2つの正規表現のどちらにも一致しないもの）や、
+    元になる日付が DEI から取れなかった場合は None（呼び出し側がその行を捨てる）。
+    """
+    m = _YEAR_CONTEXT_RE.match(ctx)
+    if m:
+        n = int(m.group(1)) if m.group(1) else 0
+        # 半期報の Prior1Year は「前事業年度」＝ fy_base そのもの（offset 0）。
+        # 半期報の PriorNYear は N-1 期前、有報の PriorNYear は N 期前（メインの実測に基づく指示）。
+        offset = n if doc_period_type == "FY" else max(n - 1, 0)
+        if not fy_base:
+            return None
+        period_end = _shift_fiscal_year_end(fy_base, offset)
+        if not period_end:
+            return None
+        return period_end, "FY"
+
+    m = _INTERIM_CONTEXT_RE.match(ctx)
+    if m:
+        is_prior = m.group(1) is not None
+        period_end = prior_interim_end if is_prior else interim_end
+        if not period_end:
+            return None
+        return period_end, "HY"
+
+    return None
+
+
+def parse_financial_csv(content: bytes) -> dict:
+    """財務数値 CSV（type=5 の ZIP）を正規化した dict にする（SPEC §2.9.2〜§2.9.4）。
+
+    戻り値: `{"standard", "consolidated_available", "period_type", "rows"}`。
+    ZIP が壊れている・本体 CSV が無い・対象行が1行も無い、といった異常はすべて例外にせず
+    `rows: []` で返す（1銘柄の1書類が変でも取り込みジョブ全体を止めないため。メインの指示）。
+    """
+    result: dict = {
+        "standard": None,
+        "consolidated_available": False,
+        "period_type": None,
+        "rows": [],
+    }
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            member = next(
+                (
+                    name
+                    for name in sorted(zf.namelist())
+                    if name.startswith("XBRL_TO_CSV/")
+                    and _FINANCIAL_CSV_MEMBER_RE.match(name.rsplit("/", 1)[-1])
+                ),
+                None,
+            )
+            if member is None:
+                return result
+            raw = zf.read(member)
+    except (zipfile.BadZipFile, KeyError):
+        return result
+
+    try:
+        text = raw.decode("utf-16")  # BOM 付き UTF-16LE（SPEC §2.9.2、実測）
+    except UnicodeDecodeError:
+        return result
+
+    rows = list(csv.DictReader(io.StringIO(text), delimiter="\t"))
+    if not rows:
+        return result
+
+    # ---- DEI（会計基準・期間種別・各期末日）を先に集める。実測ではすべて FilingDateInstant ----
+    dei: dict[str, str] = {}
+    for row in rows:
+        elid = row.get("要素ID") or ""
+        if elid.startswith("jpdei_cor:") and elid not in dei:
+            dei[elid] = (row.get("値") or "").strip()
+
+    standard_raw = dei.get("jpdei_cor:AccountingStandardsDEI", "")
+    result["standard"] = _ACCOUNTING_STANDARD_MAP.get(standard_raw.strip().lower())
+
+    doc_period_type = dei.get("jpdei_cor:TypeOfCurrentPeriodDEI")
+    if doc_period_type not in ("FY", "HY"):
+        # 対象は有報・半期報だけのはず（SPEC §2.9.1）。それ以外は解釈できないので rows: [] のまま返す
+        return result
+    result["period_type"] = doc_period_type
+
+    if doc_period_type == "FY":
+        fy_base = dei.get("jpdei_cor:CurrentFiscalYearEndDateDEI")
+    else:
+        fy_base = dei.get("jpdei_cor:PreviousFiscalYearEndDateDEI")
+    interim_end = dei.get("jpdei_cor:CurrentPeriodEndDateDEI")
+    prior_interim_end = dei.get("jpdei_cor:ComparativePeriodEndDateDEI")
+
+    # ---- 本体行を集計。key: (period_end, period_type, item, 単体か) ----
+    facts: dict[tuple[str, str, str, bool], dict] = {}
+    for row in rows:
+        elid = row.get("要素ID") or ""
+        if not elid.startswith("jpcrp_cor:"):
+            continue
+        mapping = _ELEMENT_ITEMS.get(elid[len("jpcrp_cor:") :])
+        if mapping is None:
+            continue
+        item, is_fallback = mapping
+
+        ctx = row.get("コンテキストID") or ""
+        is_nonconsolidated = ctx.endswith(_NONCONSOLIDATED_SUFFIX)
+        base_ctx = ctx[: -len(_NONCONSOLIDATED_SUFFIX)] if is_nonconsolidated else ctx
+        # `_NonConsolidatedMember` 以外の接尾辞（セグメント別など）は base_ctx が正規表現に
+        # 一致しなくなるので、ここで自動的に捨てられる（SPEC §2.9.4）
+        resolved = _resolve_financial_context(base_ctx, doc_period_type, fy_base, interim_end, prior_interim_end)
+        if resolved is None:
+            continue
+        period_end, period_type_row = resolved
+
+        value = _clean_financial_value(row.get("値"))
+        if value is None:
+            continue
+
+        unit_id = (row.get("ユニットID") or "").strip()
+        normalized = _normalize_financial_unit(unit_id, item)
+        if normalized is None:
+            continue
+        unit, scale = normalized
+        # 100倍したあとの2進浮動小数の端数（0.29 * 100 = 28.999999999999996 など）を消す。
+        # 10桁は元の CSV の有効数字（実測で最大3〜4桁）を落とさず、端数だけを消せる桁数
+        # （メインのレビュー指摘・2026-09-21）。倍率が 1.0 のときも同じ経路を通してよい。
+        value = round(value * scale, 10)
+
+        key = (period_end, period_type_row, item, is_nonconsolidated)
+        existing = facts.get(key)
+        if existing is None or (existing["is_fallback"] and not is_fallback):
+            facts[key] = {"value": value, "unit": unit, "is_fallback": is_fallback}
+
+    consolidated_available = any(not is_nc for (_, _, _, is_nc) in facts)
+    result["consolidated_available"] = consolidated_available
+    basis = "consolidated" if consolidated_available else "nonconsolidated"
+    want_nonconsolidated = not consolidated_available
+
+    out_rows: list[dict] = []
+    present_keys: set[tuple[str, str, str]] = set()
+    for (period_end, period_type_row, item, is_nc), fact in facts.items():
+        if is_nc != want_nonconsolidated:
+            continue
+        out_rows.append(
+            {
+                "period_end": period_end,
+                "period_type": period_type_row,
+                "item": item,
+                "value": fact["value"],
+                "unit": fact["unit"],
+                "basis": basis,
+            }
+        )
+        present_keys.add((period_end, period_type_row, item))
+
+    if basis == "consolidated":
+        # dps / payout_ratio / shares_outstanding / capital_stock だけは単体側から補う
+        # （SPEC §2.9 補足。会社そのものの数字なので連結・単体で意味が変わらない）。
+        # 補って入れる行の basis は、採用した basis（consolidated）にする。
+        for (period_end, period_type_row, item, is_nc), fact in facts.items():
+            if not is_nc or item not in _NONCONSOLIDATED_ONLY_ITEMS:
+                continue
+            if (period_end, period_type_row, item) in present_keys:
+                continue  # 連結側に同じ項目が既にあれば重複させない（実測では起きないはずの防御）
+            out_rows.append(
+                {
+                    "period_end": period_end,
+                    "period_type": period_type_row,
+                    "item": item,
+                    "value": fact["value"],
+                    "unit": fact["unit"],
+                    "basis": basis,
+                }
+            )
+
+    out_rows.sort(key=lambda r: (r["period_end"], r["item"]))
+    result["rows"] = out_rows
+    return result

@@ -719,3 +719,450 @@ def test_clear_document_cache_forces_refetch():
     edinet.clear_document_cache()
     edinet.fetch_document_text(client, "S100YMVN", "secret-key-value")
     assert len(session.calls) == 2
+
+
+# ---------- 財務数値（type=5 CSV）の取得・パース（P11-1。SPEC §2.9） ----------
+#
+# 実データ（`tests/fixtures/real/*.zip`）の中身はここには持ち込まない。すべて自分で組み立てた
+# 合成データ（会社名は「合成商事」のような架空のもの）。列の並びだけを実物どおりにする。
+
+_FINANCIAL_CSV_HEADER = [
+    "要素ID", "項目名", "コンテキストID", "相対年度", "連結・個別", "期間・時点", "ユニットID", "単位", "値",
+]
+
+
+def _financial_csv(rows: list[list[str]]) -> bytes:
+    """行のリストから、実物どおり UTF-16（BOM 付き）・タブ区切りの CSV バイト列を組み立てる。"""
+    lines = ["\t".join(_FINANCIAL_CSV_HEADER)]
+    lines.extend("\t".join(row) for row in rows)
+    return ("\n".join(lines) + "\n").encode("utf-16")
+
+
+def _financial_zip(
+    csv_bytes: bytes | None,
+    member_name: str = "XBRL_TO_CSV/jpcrp030000-asr-001_E99999-000_2026-03-31_01_2026-06-01.csv",
+    extra_members: dict[str, bytes] | None = None,
+) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        if csv_bytes is not None:
+            zf.writestr(member_name, csv_bytes)
+        for name, content in (extra_members or {}).items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _dei_row(element: str, value: str) -> list[str]:
+    """DEI の1行（実測では常に `FilingDateInstant` コンテキスト）。"""
+    return [f"jpdei_cor:{element}", "架空の項目名", "FilingDateInstant", "", "その他", "", "", "", value]
+
+
+def _fact_row(element: str, ctx: str, value: str, unit_id: str = "JPY") -> list[str]:
+    """「主要な経営指標等の推移」の1行。`連結・個別` 列は実測どおり常に `その他` にする。"""
+    return [f"jpcrp_cor:{element}", "架空の項目名", ctx, "", "その他", "", unit_id, "", value]
+
+
+# 有報（FY）・日本基準・合成商事の DEI。決算日はキリのいい 2026-03-31（月末保持のテストとは別会社）
+_FY_JGAAP_DEI = [
+    _dei_row("AccountingStandardsDEI", "Japan GAAP"),
+    _dei_row("TypeOfCurrentPeriodDEI", "FY"),
+    _dei_row("CurrentFiscalYearEndDateDEI", "2026-03-31"),
+    _dei_row("PreviousFiscalYearEndDateDEI", "2025-03-31"),
+    _dei_row("CurrentPeriodEndDateDEI", "2026-03-31"),
+    _dei_row("WhetherConsolidatedFinancialStatementsArePreparedDEI", "true"),
+]
+
+# 有報（FY）・IFRS・合成商事
+_FY_IFRS_DEI = [
+    _dei_row("AccountingStandardsDEI", "IFRS"),
+    _dei_row("TypeOfCurrentPeriodDEI", "FY"),
+    _dei_row("CurrentFiscalYearEndDateDEI", "2026-03-31"),
+    _dei_row("PreviousFiscalYearEndDateDEI", "2025-03-31"),
+    _dei_row("CurrentPeriodEndDateDEI", "2026-03-31"),
+    _dei_row("WhetherConsolidatedFinancialStatementsArePreparedDEI", "true"),
+]
+
+# 半期報（HY）・日本基準・合成商事
+_HY_JGAAP_DEI = [
+    _dei_row("AccountingStandardsDEI", "Japan GAAP"),
+    _dei_row("TypeOfCurrentPeriodDEI", "HY"),
+    _dei_row("CurrentFiscalYearEndDateDEI", "2027-01-31"),
+    _dei_row("PreviousFiscalYearEndDateDEI", "2026-01-31"),
+    _dei_row("CurrentPeriodEndDateDEI", "2026-07-31"),
+    _dei_row("ComparativePeriodEndDateDEI", "2025-07-31"),
+]
+
+_HY_MEMBER_NAME = "XBRL_TO_CSV/jpcrp040300-ssr-001_E99999-000_2026-07-31_01_2026-09-01.csv"
+
+
+def _parse(rows: list[list[str]], member_name: str | None = None) -> dict:
+    csv_bytes = _financial_csv(rows)
+    if member_name is None:
+        return edinet.parse_financial_csv(_financial_zip(csv_bytes))
+    return edinet.parse_financial_csv(_financial_zip(csv_bytes, member_name=member_name))
+
+
+# ---- 1. 日本基準・連結あり ----
+
+
+def test_parse_financial_csv_jgaap_consolidated_five_periods():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("NetSalesSummaryOfBusinessResults", "CurrentYearDuration", "500000000"),
+        _fact_row("NetSalesSummaryOfBusinessResults", "Prior1YearDuration", "480000000"),
+        _fact_row("NetSalesSummaryOfBusinessResults", "Prior2YearDuration", "460000000"),
+        _fact_row("NetSalesSummaryOfBusinessResults", "Prior3YearDuration", "440000000"),
+        _fact_row("NetSalesSummaryOfBusinessResults", "Prior4YearDuration", "420000000"),
+    ]
+    result = _parse(rows)
+    assert result["standard"] == "jgaap"
+    revenue_rows = [r for r in result["rows"] if r["item"] == "revenue"]
+    assert len(revenue_rows) == 5
+    assert all(r["basis"] == "consolidated" for r in revenue_rows)
+    assert all(r["period_type"] == "FY" for r in revenue_rows)
+    assert sorted(r["period_end"] for r in revenue_rows) == [
+        "2022-03-31", "2023-03-31", "2024-03-31", "2025-03-31", "2026-03-31",
+    ]
+
+
+# ---- 2. IFRS。要素IDの罠（EquityToAssetRatioIFRS→bps） ----
+
+
+def test_parse_financial_csv_ifrs_maps_items_and_avoids_the_equity_ratio_trap():
+    rows = _FY_IFRS_DEI + [
+        _fact_row("RevenueIFRSSummaryOfBusinessResults", "CurrentYearDuration", "300000000"),
+        _fact_row(
+            "EquityToAssetRatioIFRSSummaryOfBusinessResults",
+            "CurrentYearInstant",
+            "3057.72",
+            unit_id="JPYPerShares",
+        ),
+    ]
+    result = _parse(rows)
+    assert result["standard"] == "ifrs"
+    items = {r["item"] for r in result["rows"]}
+    assert "revenue" in items
+    assert "bps" in items, "EquityToAssetRatioIFRS... は要素IDに反して bps（1株当たり親会社所有者帰属持分）"
+    assert "equity_ratio" not in items, "自己資本比率に誤って割り当てられている"
+    bps_row = next(r for r in result["rows"] if r["item"] == "bps")
+    assert bps_row["unit"] == "JPY/share"
+    assert bps_row["value"] == pytest.approx(3057.72)
+
+
+# ---- 3. 連結が1行も無い書類 ----
+
+
+def test_parse_financial_csv_no_consolidated_rows_falls_back_to_nonconsolidated():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("NetIncomeLossSummaryOfBusinessResults", "CurrentYearDuration_NonConsolidatedMember", "50000000"),
+        _fact_row("TotalAssetsSummaryOfBusinessResults", "CurrentYearInstant_NonConsolidatedMember", "900000000"),
+    ]
+    result = _parse(rows)
+    assert result["consolidated_available"] is False
+    assert result["rows"], "単体側の行も出ないと会社側にデータが全く無いことになってしまう"
+    assert all(r["basis"] == "nonconsolidated" for r in result["rows"])
+    assert {r["item"] for r in result["rows"]} == {"net_income", "total_assets"}
+
+
+# ---- 4. セグメント別（_NonConsolidatedMember 以外の接尾辞）は現れない ----
+
+
+def test_parse_financial_csv_drops_segment_member_rows():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("NetSalesSummaryOfBusinessResults", "CurrentYearDuration_ConsumerSegmentMember", "999999"),
+    ]
+    result = _parse(rows)
+    assert result["rows"] == []
+    assert result["consolidated_available"] is False
+
+
+# ---- 5. 半期報のコンテキスト対応 ----
+
+
+def test_parse_financial_csv_half_year_context_mapping():
+    rows = _HY_JGAAP_DEI + [
+        _fact_row("NetSalesSummaryOfBusinessResults", "InterimDuration", "150000000"),
+        _fact_row("NetSalesSummaryOfBusinessResults", "Prior1InterimDuration", "140000000"),
+        _fact_row("NetSalesSummaryOfBusinessResults", "Prior1YearDuration", "290000000"),
+    ]
+    result = _parse(rows, member_name=_HY_MEMBER_NAME)
+    assert result["period_type"] == "HY"
+    by_period = {(r["period_end"], r["period_type"]) for r in result["rows"]}
+    assert ("2026-07-31", "HY") in by_period, "InterimDuration は CurrentPeriodEndDateDEI"
+    assert ("2025-07-31", "HY") in by_period, "Prior1InterimDuration は ComparativePeriodEndDateDEI"
+    assert ("2026-01-31", "FY") in by_period, (
+        "半期報の Prior1YearDuration は前事業年度そのもの（offset 0）で、period_type は FY"
+    )
+
+
+# ---- 6. うるう年（月末を保つ） ----
+
+
+def test_parse_financial_csv_prior_year_keeps_month_end_across_leap_year():
+    leap_dei = [
+        _dei_row("AccountingStandardsDEI", "Japan GAAP"),
+        _dei_row("TypeOfCurrentPeriodDEI", "FY"),
+        _dei_row("CurrentFiscalYearEndDateDEI", "2026-02-28"),
+        _dei_row("PreviousFiscalYearEndDateDEI", "2025-02-28"),
+        _dei_row("CurrentPeriodEndDateDEI", "2026-02-28"),
+    ]
+    rows = leap_dei + [
+        _fact_row("NetAssetsSummaryOfBusinessResults", "Prior2YearInstant", "100000000"),
+    ]
+    result = _parse(rows)
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["period_end"] == "2024-02-29"
+
+
+# ---- 7. 比率の100倍・PER は100倍しない ----
+
+
+def test_parse_financial_csv_percent_items_scaled_by_100_but_per_is_not():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("EquityToAssetRatioSummaryOfBusinessResults", "CurrentYearInstant", "0.638", unit_id="pure"),
+        _fact_row("RateOfReturnOnEquitySummaryOfBusinessResults", "CurrentYearDuration", "0.052", unit_id="pure"),
+        _fact_row("PayoutRatioSummaryOfBusinessResults", "CurrentYearDuration", "0.066", unit_id="pure"),
+        _fact_row("PriceEarningsRatioSummaryOfBusinessResults", "CurrentYearInstant", "11.7", unit_id="pure"),
+    ]
+    result = _parse(rows)
+    by_item = {r["item"]: r for r in result["rows"]}
+    assert by_item["equity_ratio"]["value"] == pytest.approx(63.8)
+    assert by_item["equity_ratio"]["unit"] == "%"
+    assert by_item["roe"]["value"] == pytest.approx(5.2)
+    assert by_item["payout_ratio"]["value"] == pytest.approx(6.6)
+    assert by_item["per"]["value"] == pytest.approx(11.7), "PER は100倍しない"
+    assert by_item["per"]["unit"] == "times"
+
+
+def test_parse_financial_csv_percent_scaling_rounds_away_binary_float_remainder():
+    """`0.29 * 100` は `28.999999999999996` になる（2進浮動小数の端数）。丸めて `29.0` ちょうどにする。
+
+    丸めが効いているかを確かめるのが目的なので、`pytest.approx` ではなく厳密な `==` で検証する
+    （メインのレビュー指摘・2026-09-21。実測で自己資本比率 `0.29` に端数が出た）。
+    """
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("EquityToAssetRatioSummaryOfBusinessResults", "CurrentYearInstant", "0.29", unit_id="pure"),
+    ]
+    result = _parse(rows)
+    equity_ratio = next(r for r in result["rows"] if r["item"] == "equity_ratio")
+    assert equity_ratio["value"] == 29.0
+
+
+# ---- 8. 「－」の行は現れない ----
+
+
+def test_parse_financial_csv_missing_value_marker_is_dropped():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("NetSalesSummaryOfBusinessResults", "CurrentYearDuration", "－"),
+    ]
+    result = _parse(rows)
+    assert result["rows"] == []
+
+
+# ---- 9. 連結採用でも dps/payout_ratio/shares_outstanding/capital_stock は単体側から補う ----
+
+
+def test_parse_financial_csv_supplements_company_wide_items_from_nonconsolidated():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("NetSalesSummaryOfBusinessResults", "CurrentYearDuration", "500000000"),  # 連結を確定させる
+        _fact_row(
+            "DividendPaidPerShareSummaryOfBusinessResults",
+            "CurrentYearDuration_NonConsolidatedMember",
+            "25",
+            unit_id="JPYPerShares",
+        ),
+        _fact_row(
+            "PayoutRatioSummaryOfBusinessResults",
+            "CurrentYearDuration_NonConsolidatedMember",
+            "0.3",
+            unit_id="pure",
+        ),
+        _fact_row(
+            "TotalNumberOfIssuedSharesSummaryOfBusinessResults",
+            "CurrentYearInstant_NonConsolidatedMember",
+            "1000000",
+            unit_id="shares",
+        ),
+        _fact_row(
+            "CapitalStockSummaryOfBusinessResults",
+            "CurrentYearInstant_NonConsolidatedMember",
+            "10000000",
+        ),
+    ]
+    result = _parse(rows)
+    assert result["consolidated_available"] is True
+    by_item = {r["item"]: r for r in result["rows"]}
+    for item in ("dps", "payout_ratio", "shares_outstanding", "capital_stock"):
+        assert item in by_item, f"{item} が単体側から補われていない"
+        assert by_item[item]["basis"] == "consolidated", "補った行も basis は採用した basis にする"
+    assert by_item["dps"]["value"] == pytest.approx(25)
+    assert by_item["payout_ratio"]["value"] == pytest.approx(30.0)
+
+
+# ---- 10. 壊れた ZIP・本体無し・空の CSV ----
+
+
+def test_parse_financial_csv_bad_zip_returns_empty_rows_without_raising():
+    result = edinet.parse_financial_csv(b"not a zip file at all")
+    assert result == {"standard": None, "consolidated_available": False, "period_type": None, "rows": []}
+
+
+def test_parse_financial_csv_no_body_member_returns_empty_rows():
+    """`jpaud-*`（監査報告書）しか入っていない ZIP は本体と誤認しない（10・11 を兼ねる）。"""
+    zip_bytes = _financial_zip(
+        None,
+        extra_members={
+            "XBRL_TO_CSV/jpaud-aai-cc-001_E99999-000_2026-03-31_01_2026-06-01.csv": _financial_csv(_FY_JGAAP_DEI),
+        },
+    )
+    result = edinet.parse_financial_csv(zip_bytes)
+    assert result == {"standard": None, "consolidated_available": False, "period_type": None, "rows": []}
+
+
+def test_parse_financial_csv_empty_csv_returns_empty_rows():
+    empty_csv = ("\t".join(_FINANCIAL_CSV_HEADER) + "\n").encode("utf-16")
+    result = edinet.parse_financial_csv(_financial_zip(empty_csv))
+    assert result == {"standard": None, "consolidated_available": False, "period_type": None, "rows": []}
+
+
+# ---- フォールバック要素（revenue の OperatingRevenue1、net_income の NetIncomeLoss） ----
+
+
+def test_parse_financial_csv_prefers_primary_element_over_fallback():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("OperatingRevenue1SummaryOfBusinessResults", "CurrentYearDuration", "111111"),
+        _fact_row("NetSalesSummaryOfBusinessResults", "CurrentYearDuration", "222222"),
+    ]
+    result = _parse(rows)
+    revenue = next(r for r in result["rows"] if r["item"] == "revenue")
+    assert revenue["value"] == pytest.approx(222222)
+
+
+def test_parse_financial_csv_uses_fallback_element_when_primary_is_absent():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("OperatingRevenue1SummaryOfBusinessResults", "CurrentYearDuration", "111111"),
+    ]
+    result = _parse(rows)
+    revenue = next(r for r in result["rows"] if r["item"] == "revenue")
+    assert revenue["value"] == pytest.approx(111111)
+
+
+# ---- 未知の要素ID・想定外の単位 ----
+
+
+def test_parse_financial_csv_drops_unmapped_element_ids_silently():
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("SomeUnknownElementSummaryOfBusinessResults", "CurrentYearDuration", "12345"),
+    ]
+    result = _parse(rows)
+    assert result["rows"] == []
+
+
+def test_parse_financial_csv_unexpected_pure_unit_drops_row_and_warns(caplog):
+    rows = _FY_JGAAP_DEI + [
+        _fact_row("NetSalesSummaryOfBusinessResults", "CurrentYearDuration", "12345", unit_id="pure"),
+    ]
+    with caplog.at_level(logging.WARNING):
+        result = _parse(rows)
+    assert result["rows"] == []
+    assert "pure" in caplog.text
+
+
+# ---- 12. fetch_financial_csv（type=5） ----
+
+
+def test_fetch_financial_csv_uses_type_5_and_expected_url():
+    body = _financial_zip(_financial_csv(_FY_JGAAP_DEI))
+    client, session = _stream_client_with(_FakeStreamResponse(content=body))
+    result = edinet.fetch_financial_csv(client, "S100YMVN", "secret-key-value")
+    assert result == body
+    call = session.calls[0]
+    assert call["url"] == edinet.DOCUMENT_URL.format(doc_id="S100YMVN")
+    assert call["params"] == {"type": 5, "Subscription-Key": "secret-key-value"}
+
+
+def test_fetch_financial_csv_rejects_non_alnum_doc_id():
+    client, session = _stream_client_with(_FakeStreamResponse(content=b""))
+    with pytest.raises(UserFacingError):
+        edinet.fetch_financial_csv(client, "../evil", "secret-key-value")
+    assert session.calls == [], "doc_id を検証する前に通信してしまっている"
+
+
+def test_fetch_financial_csv_empty_api_key_raises():
+    client, session = _stream_client_with(_FakeStreamResponse(content=b""))
+    with pytest.raises(UserFacingError):
+        edinet.fetch_financial_csv(client, "S100YMVN", "")
+    assert session.calls == []
+
+
+def test_fetch_financial_csv_too_large_aborts_without_reading_body():
+    response = _FakeStreamResponse(
+        content=b"x" * 10,
+        headers={"Content-Length": str(edinet.FINANCIAL_DOCUMENT_MAX_BYTES + 1)},
+    )
+    client, session = _stream_client_with(response)
+    with pytest.raises(edinet.DocumentTooLarge) as err:
+        edinet.fetch_financial_csv(client, "S100YMVN", "secret-key-value")
+    assert err.value.size_bytes == edinet.FINANCIAL_DOCUMENT_MAX_BYTES + 1
+    assert response.closed is True
+    assert session.calls[0]["stream"] is True
+
+
+def test_fetch_financial_csv_does_not_leak_api_key_in_logs(caplog):
+    body = _financial_zip(_financial_csv(_FY_JGAAP_DEI))
+    client, _ = _stream_client_with(_FakeStreamResponse(content=body))
+    secret = "sk-super-secret-financial-value"
+    with caplog.at_level(logging.INFO):
+        edinet.fetch_financial_csv(client, "S100YMVN", secret)
+    assert secret not in caplog.text
+    assert "Subscription-Key=***" in caplog.text
+
+
+# ---------- 実データがあるときだけ走るテスト（tests/test_real_fixtures.py と同じ考え方） ----------
+#
+# `tests/fixtures/real/` は Git 対象外なので、実物が無い環境（CI 含む）では skip する。
+# 値そのものは検証せず、「例外にならず一定数以上の行が取れる」「期待した standard/basis になる」
+# という構造だけを見る（実数値をここに書くこと自体が実データの再配布になってしまうため）。
+# このファイルは `app/sources/edinet.py` 用のテストファイルなので、`tests/test_real_fixtures.py`
+# を編集せずこちらにまとめて追記する（P11-1 の作業指示で編集してよいファイルに含まれていないため）。
+
+_REAL_FINANCIAL = Path(__file__).parent / "fixtures" / "real"
+_REAL_FINANCIAL_CASES = [
+    # (ファイル名, 期待する standard, 期待する consolidated_available)
+    ("S100YGH5.zip", "ifrs", True),  # ソフトバンクグループ 有報・IFRS・連結あり
+    ("S100Y62Z.zip", "jgaap", True),  # 有報・日本基準・連結あり
+    ("S100Z1Z3.zip", "jgaap", True),  # モロゾフ 半期報告書・日本基準
+    ("S100Z2OT.zip", "jgaap", False),  # ユーザーローカル 有報・連結決算なし（単体のみ）
+]
+real_financial_only = pytest.mark.skipif(
+    not all((_REAL_FINANCIAL / name).exists() for name, _, _ in _REAL_FINANCIAL_CASES),
+    reason="採取した EDINET 財務数値 ZIP（type=5）が無い（Git 対象外）",
+)
+
+
+@real_financial_only
+@pytest.mark.parametrize("filename,expected_standard,expected_consolidated", _REAL_FINANCIAL_CASES)
+def test_parse_financial_csv_parses_the_captured_real_documents(
+    filename, expected_standard, expected_consolidated
+):
+    content = (_REAL_FINANCIAL / filename).read_bytes()
+    result = edinet.parse_financial_csv(content)
+
+    assert result["standard"] == expected_standard
+    assert result["consolidated_available"] is expected_consolidated
+    assert result["period_type"] in ("FY", "HY")
+    assert len(result["rows"]) >= 10, "「主要な経営指標等の推移」なら最低でもこの程度は取れるはず"
+
+    expected_basis = "consolidated" if expected_consolidated else "nonconsolidated"
+    assert all(r["basis"] == expected_basis for r in result["rows"])
+    assert all(r["period_type"] in ("FY", "HY") for r in result["rows"])
+    assert all(len(r["period_end"]) == 10 and r["period_end"][4] == "-" for r in result["rows"])
+    # revenue は「主要な経営指標等の推移」で必ず開示される項目のはず
+    assert any(r["item"] == "revenue" for r in result["rows"])
+
+
+@real_financial_only
+def test_fetch_financial_csv_real_zip_sizes_are_within_the_shared_max_bytes():
+    """実測の ZIP サイズが `FINANCIAL_DOCUMENT_MAX_BYTES` の上限内であることの保険（SPEC §2.9.2）。"""
+    for filename, _, _ in _REAL_FINANCIAL_CASES:
+        size = (_REAL_FINANCIAL / filename).stat().st_size
+        assert size <= edinet.FINANCIAL_DOCUMENT_MAX_BYTES

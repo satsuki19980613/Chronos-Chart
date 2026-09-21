@@ -311,6 +311,10 @@
       fetchBtn.title = title;
       redoBtn.disabled = !ok;
       redoBtn.title = title;
+      // 財務数値も同じ EDINET の API キーを使うので、有効/無効をそろえる
+      const finBtn = $("financials-fetch");
+      finBtn.disabled = !ok;
+      finBtn.title = title;
     } catch (_) {
       // 設定を読めなくても登録画面自体は使えるようにしておく（判断は次回の refreshStocks に委ねる）
     }
@@ -346,6 +350,8 @@
     if (est.targets === 0) {
       if (onEmpty) onEmpty(est);
       else toast("取得が必要な日付はありません（すべて取得済みです）");
+      // 開示が最新でも財務数値は未取得のことがあるので、この経路でも案内する（SPEC §2.9.1）
+      await offerFinancialsAfterDisclosures(null);
       return;
     }
     const rangeText = disclosuresRangeText(est, redoDays);
@@ -368,6 +374,82 @@
       toast(job.result?.summary || "開示の取得が完了しました", job.result?.aborted ? "warn" : "info", 8000);
     }
     if (state.currentSymbol && $("view-dashboard").classList.contains("is-active")) await openDashboard(state.currentSymbol);
+    // 開示が入ったところで、同じ範囲の財務数値も取れることを知らせる（SPEC §2.9.1）
+    if (job.state !== "cancelled" && !job.result?.aborted) await offerFinancialsAfterDisclosures(null);
+  }
+
+
+  // ---------- 財務数値（EDINET の有報・半期報。SPEC §2.9） ----------
+  // 開示（documents.json）と違い、こちらは書類そのものを1件ずつ取りに行く。年2回しか増えないので
+  // 起動時の自動更新には入れず、この導線からだけ実行する（SPEC §2.9.1）。
+  //
+  // symbol を渡すとその銘柄だけ、省略すると登録銘柄すべてが対象。
+  // onEmpty(est) は対象書類が0件のときに呼ばれる（省略時はトースト。登録直後の提案では
+  // 「何も言わない」を渡して登録のじゃまをしない）
+  async function runFinancials(symbol, { buildMessage, onEmpty } = {}) {
+    let est;
+    try {
+      est = await api.call("estimate_financials", symbol || null);
+    } catch (err) {
+      toast(err.message, "error", 8000);
+      return;
+    }
+    if (!est.can_run) {
+      toast(est.reason || "財務数値を取得できません", "warn", 8000);
+      return;
+    }
+    if (est.docs === 0) {
+      if (onEmpty) onEmpty(est);
+      else toast("取得が必要な書類はありません（すべて取得済みです）");
+      return;
+    }
+
+    // 間隔は EDINET の1秒。書類1件あたり1リクエストなので requests 秒が目安
+    const etaText = est.requests < 60 ? "1分未満で終わります" : `およそ ${Math.round(est.requests / 60)} 分かかります`;
+    let rangeText = `取得する書類: ${est.docs} 件（実際に取りに行くのは ${est.requests} 件 ＝ ${etaText}）`;
+    if (est.docs > est.requests) {
+      rangeText += `\n残り ${est.docs - est.requests} 件は CSV が提供されていないので、取りに行かずに記録だけします。`;
+    }
+    const message = buildMessage
+      ? buildMessage(rangeText, est)
+      : `${rangeText}\n\n実行しますか？（実行中はいつでも中断できます）`;
+    if (!confirm(message)) return;
+
+    let job;
+    try {
+      job = await Jobs.run("financials", symbol ? { symbol } : {});
+    } catch (err) {
+      toast(err.message, "error", 8000);
+      return;
+    }
+    if (job.state === "cancelled") {
+      toast("財務数値の取得を中断しました");
+      return;
+    }
+    const r = job.result || {};
+    let summary = `財務数値を取得しました（書類 ${r.docs || 0} 件・${r.saved || 0} 件の数値を保存）`;
+    if (r.no_csv) summary += `／CSV なし ${r.no_csv} 件`;
+    if (r.errors && r.errors.length) summary += `／失敗 ${r.errors.length} 件`;
+    if (r.aborted === "forbidden") summary += "（EDINET から拒否されたため中止しました。API キーと時間をおいての再実行を確認してください）";
+    if (r.aborted === "failures") summary += "（失敗が続いたため中止しました）";
+    toast(summary, r.aborted || (r.errors && r.errors.length) ? "warn" : "info", 8000);
+    if (state.currentSymbol && $("view-dashboard").classList.contains("is-active")) await openDashboard(state.currentSymbol);
+  }
+
+  // 開示の取得が終わったあとに、同じ銘柄群の財務数値も取れることを知らせる（SPEC §2.9.1 の導線）。
+  // 開示が入っていないと対象書類を選べないので、必ず開示のあとに案内する。
+  // 対象0件・キー未設定のときは何も言わない（開示取得の達成感をじゃましない）
+  async function offerFinancialsAfterDisclosures(symbol) {
+    await runFinancials(symbol, {
+      onEmpty: () => {},
+      buildMessage: (rangeText) => {
+        let message = "有価証券報告書・半期報告書から財務数値（売上・利益・キャッシュフロー・ROE など）を取り込めます。\n\n";
+        message += `${rangeText}\n\n`;
+        message += "起動時の自動更新では取りに行きません（年2回しか増えないため）。\n";
+        message += "実行しますか？（実行中はいつでも中断できます。あとで「財務数値を取得」からも実行できます）";
+        return message;
+      },
+    });
   }
 
   // 登録直後に、その銘柄の期間ぶんの開示取得を提案する（P8-2）。起動時の自動更新は直近30日分しか
@@ -384,7 +466,9 @@
     if (!settings.secrets.edinet_api_key.source) return; // 未設定なら提案しない
 
     await runDisclosures(0, {
-      onEmpty: () => {}, // 対象0件（＝新規銘柄の期間もすでに取得済み）なら何も言わない
+      // 対象0件（＝新規銘柄の期間もすでに取得済み）なら開示については何も言わないが、
+      // 財務数値は未取得のことがあるのでそちらは案内する（runDisclosures の既定経路と同じ）
+      onEmpty: () => {},
       buildMessage: (rangeText) => {
         let message = "登録した銘柄の期間に合わせて、EDINET の開示を取得できます。\n\n";
         message += `${rangeText}\n\n`;
@@ -1239,6 +1323,7 @@
     $("short-all").addEventListener("click", runShortAll);
     $("disclosures-fetch").addEventListener("click", () => runDisclosures(0));
     $("disclosures-redo").addEventListener("click", () => runDisclosures(90));
+    $("financials-fetch").addEventListener("click", () => runFinancials(null));
     $("stock-select").addEventListener("change", (e) => openDashboard(e.target.value));
     $("dash-update").addEventListener("click", async () => {
       const symbol = state.currentSymbol;
