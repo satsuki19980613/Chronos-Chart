@@ -31,6 +31,9 @@ from .sources.base import HttpError
 
 log = logging.getLogger(__name__)
 
+# アプリ内ビューアに渡すレポートの上限。srcdoc に載せるので、大きすぎるものは外部ブラウザへ回す
+REPORT_MAX_BYTES = 8 * 1024 * 1024
+
 
 def _response(func):
     @wraps(func)
@@ -255,6 +258,27 @@ class Api:
     def list_reports(self):
         """生成済みレポートの一覧（新しい順）。"""
         return ai_report.list_reports(self._service.db)
+
+    @_response
+    def get_report_html(self, report_id: int):
+        """レポートの HTML をそのまま返す（アプリ内ビューア用）。
+
+        `data/reports/` は pywebview の内蔵サーバーからも dev_server からも配信されない
+        （どちらも配信ルートが `web/` 固定）ので、iframe に URL を渡す方式は使えない。
+        文字列で渡して画面側が `srcdoc` に入れる。**画面側は必ずサンドボックス付きの iframe で表示すること**
+        （中身には AI の出力が入る）。
+        """
+        row = ai_report.get_report(self._service.db, int(report_id))
+        path = Path(row["path"])
+        if not path.exists():
+            raise UserFacingError(f"レポートのファイルが見つかりません: {path}")
+        size = path.stat().st_size
+        if size > REPORT_MAX_BYTES:
+            raise UserFacingError(
+                f"レポートが大きすぎて画面に表示できません（{size // 1024}KB）。"
+                "「ブラウザで開く」を使ってください"
+            )
+        return {**row, "html": path.read_text(encoding="utf-8")}
 
     @_response
     def open_report(self, report_id: int):

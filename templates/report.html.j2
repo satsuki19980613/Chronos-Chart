@@ -13,16 +13,26 @@
     --bear: #1b5e20;
     --neutral: #5b6472;
     --accent: #274690;
+    /* Okabe-Ito パレット（app/ai/charts.py の PALETTE と対応）。図の色はここを参照する */
+    --chart-1: #E69F00; /* orange */
+    --chart-2: #56B4E9; /* skyblue */
+    --chart-3: #009E73; /* green */
+    --chart-4: #F0E442; /* yellow */
+    --chart-5: #0072B2; /* blue */
+    --chart-6: #D55E00; /* vermilion */
+    --chart-7: #CC79A7; /* purple */
+    --chart-8: #000000; /* black */
   }
   * { box-sizing: border-box; }
   body {
-    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+    font-family: "Yu Gothic UI", "Yu Gothic", "Meiryo", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
     color: var(--fg);
     background: #fff;
     max-width: 900px;
     margin: 0 auto;
     padding: 24px 20px 60px;
     line-height: 1.7;
+    font-variant-numeric: tabular-nums;
   }
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
   h2 {
@@ -78,6 +88,7 @@
     vertical-align: top;
   }
   table.data-table th { background: var(--bg-soft); }
+  table.data-table td.num, table.data-table th.num { text-align: right; }
   .status-bull { color: var(--bull); font-weight: bold; }
   .status-bear { color: var(--bear); font-weight: bold; }
   .status-neutral { color: var(--neutral); }
@@ -91,6 +102,68 @@
     margin-right: 6px;
   }
   .empty-note { color: var(--muted); }
+
+  /* 評価バッジ（色だけに頼らず、記号を必ず併記する） */
+  .section-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px;
+    border-radius: 999px;
+    font-weight: bold;
+    font-size: 0.95rem;
+    border: 1.5px solid currentColor;
+    margin-bottom: 0.6em;
+  }
+  .section-badge.bull { color: var(--bull); }
+  .section-badge.bear { color: var(--bear); }
+  .section-badge.neutral { color: var(--neutral); }
+
+  /* 図（app/ai/charts.py が返す SVG）の共通レイアウト */
+  .chart-figure { margin: 0.6em 0 1.4em; }
+  .chart-figure figcaption { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
+  svg.cc-chart { display: block; width: 100%; height: auto; }
+  svg.cc-chart--sparkline { width: 84px; height: 22px; }
+  svg.cc-chart--placeholder { color: var(--muted); }
+
+  /* 財務ハイライト: KPI カード */
+  p.fin-meta { color: var(--muted); font-size: 0.88rem; margin: 0.4em 0 1em; }
+  .kpi-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 0.6em;
+  }
+  .kpi-card {
+    flex: 1 1 150px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--bg-soft);
+  }
+  .kpi-card .kpi-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 2px; }
+  .kpi-card .kpi-value {
+    font-size: 1.2rem;
+    font-weight: bold;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  /* KPI の増減は色で良し悪しを言わない（▲▼の記号だけで方向を示す。本文色のまま） */
+  .kpi-card .kpi-delta { font-size: 0.85rem; text-align: right; margin-top: 2px; }
+  .kpi-card .kpi-delta.is-na { color: var(--muted); }
+  .kpi-card .kpi-spark { margin-top: 6px; }
+  .kpi-card .kpi-note { font-size: 0.76rem; color: var(--muted); text-align: right; margin-top: 2px; }
+
+  /* 指標値の詳細: カテゴリごとの折りたたみ */
+  details.indicator-more { margin: 0.3em 0 1em; }
+  details.indicator-more summary {
+    cursor: pointer;
+    color: var(--accent);
+    font-size: 0.9rem;
+    margin-top: 0.3em;
+  }
+  details.indicator-more table.data-table { margin-top: 0.5em; }
+
   section.disclaimer {
     margin-top: 2.4em;
     padding-top: 1em;
@@ -100,10 +173,59 @@
   }
   section.disclaimer ul { padding-left: 1.2em; }
   section.disclaimer li { margin-bottom: 0.5em; }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e6e6e6;
+      --muted: #a3acb9;
+      --border: #3a3f4b;
+      --bg-soft: #20242c;
+      --bull: #ff7a72;
+      --bear: #55c08a;
+      --neutral: #a3acb9;
+      --accent: #8fb2ff;
+      --chart-1: #f0a93a;
+      --chart-2: #7cc9f0;
+      --chart-3: #33bd94;
+      --chart-4: #eadd5a;
+      --chart-5: #5aa6e6;
+      --chart-6: #e6864a;
+      --chart-7: #dd9dc4;
+      --chart-8: #f2f2f2;
+    }
+    body { background: #14161b; }
+    .withdrawn-tag { color: #14161b; }
+  }
+
   @media print {
-    body { max-width: none; }
+    :root {
+      --fg: #1a1a1a;
+      --muted: #5b6472;
+      --border: #b9c0cb;
+      --bg-soft: #eef0f3;
+      --bull: #b3261e;
+      --bear: #1b5e20;
+      --neutral: #5b6472;
+      --accent: #274690;
+      --chart-1: #E69F00;
+      --chart-2: #56B4E9;
+      --chart-3: #009E73;
+      --chart-4: #F0E442;
+      --chart-5: #0072B2;
+      --chart-6: #D55E00;
+      --chart-7: #CC79A7;
+      --chart-8: #000000;
+    }
+    @page { size: A4; margin: 14mm 12mm; }
+    body { max-width: none; background: #fff; color: #1a1a1a; padding: 0; }
     h2 { break-after: avoid; }
-    table.data-table { break-inside: avoid; }
+    header.report-header, section, table.data-table, .chart-figure, .kpi-grid, .verdict-box {
+      break-inside: avoid;
+    }
+    /* <details> は印刷では常に開いた状態で見せる（JS を使わずに CSS だけで強制する） */
+    details { display: block !important; }
+    details > summary { display: block !important; font-weight: bold; }
+    details > *:not(summary) { display: block !important; }
   }
 </style>
 </head>
@@ -139,7 +261,49 @@
   数値としての精度を保証するものではないため、参考情報としてのみ扱ってください。
 </p>
 
+<h2 id="price-chart">株価チャート</h2>
+<figure class="chart-figure">
+  {{ price_chart_svg | safe }}
+  <figcaption>終値と移動平均線（SMA5・SMA25・SMA75）。▲買い/▼売りシグナル、●開示の提出日を重ねて表示。</figcaption>
+</figure>
+
+<h2 id="financials">財務ハイライト</h2>
+{% if fin.available %}
+<p class="fin-meta">会計基準: {{ fin.standard_label }} ／ {{ fin.basis_label }} ／ 対象期: {{ fin.period_range }}</p>
+<div class="kpi-grid">
+  {% for kpi in fin.kpis %}
+  <div class="kpi-card">
+    <div class="kpi-label">{{ kpi.label }}</div>
+    <div class="kpi-value">{{ kpi.value_display }}</div>
+    <div class="kpi-delta {{ kpi.delta['class'] }}">{{ kpi.delta.text }}</div>
+    {% if kpi.note %}<div class="kpi-note">{{ kpi.note }}</div>{% endif %}
+    {% if kpi.spark_svg %}<div class="kpi-spark">{{ kpi.spark_svg | safe }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<h3>業績5期推移</h3>
+<figure class="chart-figure">{{ fin.performance_svg | safe }}</figure>
+
+<h3>キャッシュフロー5期推移</h3>
+<figure class="chart-figure">{{ fin.cf_svg | safe }}</figure>
+
+<h3>自己資本比率・ROEの推移</h3>
+<figure class="chart-figure">{{ fin.ratio_svg | safe }}</figure>
+
+<h3>PERの過去レンジと現在値</h3>
+<figure class="chart-figure">{{ fin.per_svg | safe }}</figure>
+{% else %}
+<p class="empty-note">
+  財務数値はまだ取得していません。有価証券報告書（EDINET）からの財務数値の取り込み機能が実装されると、
+  このセクションに業績・キャッシュフロー・自己資本比率・ROE・PER などの推移が自動的に表示されます。
+</p>
+<figure class="chart-figure">{{ fin.placeholder_svg | safe }}</figure>
+{% endif %}
+
 <h2 id="technical">テクニカルの観点</h2>
+<div class="section-badge {{ technical_badge['class'] }}">{{ technical_badge.symbol }} {{ technical_badge.label }}</div>
+<p class="caveat">※ このバッジは指標値の機械的な判定を集計したものであり、上記「総括・判定」の総合判定（AIの自己申告）とは別の基準です。</p>
 <p>{{ report.technical.assessment }}</p>
 <ul class="evidence-list">
   {% for item in report.technical.evidence %}
@@ -177,23 +341,46 @@
 <p class="empty-note">挙げられた注目点はありません。</p>
 {% endif %}
 
-<h2 id="indicators">根拠となった指標値</h2>
-{% if latest_rows %}
+<h2 id="indicators">指標値の詳細</h2>
+{% if latest_categories %}
+{% for cat in latest_categories %}
+<h3>{{ cat.label }}</h3>
 <table class="data-table">
   <thead>
-    <tr><th>指標</th><th>判定</th><th>値</th><th>備考</th></tr>
+    <tr><th>指標</th><th>判定</th><th class="num">値</th><th>備考</th></tr>
   </thead>
   <tbody>
-    {% for row in latest_rows %}
+    {% for row in cat.primary %}
     <tr>
       <td>{{ row.label }}</td>
       <td class="status-{{ row.status_class }}">{{ row.status_label }}</td>
-      <td>{{ row.value_display }}</td>
+      <td class="num">{{ row.value_display }}</td>
       <td>{{ row.note }}</td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+{% if cat.rest %}
+<details class="indicator-more">
+  <summary>そのほかの{{ cat.label }}指標を表示（{{ cat.rest|length }}件）</summary>
+  <table class="data-table">
+    <thead>
+      <tr><th>指標</th><th>判定</th><th class="num">値</th><th>備考</th></tr>
+    </thead>
+    <tbody>
+      {% for row in cat.rest %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td class="status-{{ row.status_class }}">{{ row.status_label }}</td>
+        <td class="num">{{ row.value_display }}</td>
+        <td>{{ row.note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endif %}
+{% endfor %}
 {% else %}
 <p class="empty-note">指標の判定はありません（データ不足）。</p>
 {% endif %}

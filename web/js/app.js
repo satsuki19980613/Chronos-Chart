@@ -15,6 +15,7 @@
     exportDays: "60",
     reportDays: "60",
     reportSymbol: null, // レポートタブでユーザーが選び直した銘柄（未選択ならダッシュボードの銘柄を使う）
+    previewReportId: null, // レポートタブでプレビュー中のレポート id（P12-3）
     visibleRange: null, // チャートの表示範囲 {from, to}（"YYYY-MM-DD"）。P5-4 でイベント欄の絞り込みに使う
     pendingMarkerId: null, // 直近クリックされたマーカーの id（"ev:<日付>"）。P5-5 でイベント欄の強調に使う
   };
@@ -998,6 +999,101 @@
     $("report-quota-updated").textContent = `更新: ${new Date().toLocaleTimeString("ja-JP")}`;
   }
 
+  // 380px の左カラムに収まるカード形式（表だと6列が収まらず横スクロールで操作ボタンが隠れるため）。
+  // ファイルが無いカードもクリックできるようにしておく（バックエンドが
+  // 「レポートのファイルが見つかりません」をプレビュー欄に返すので、それがそのまま理由表示になる）。
+  // カード自体は role="button" + tabindex（キーボード操作は onReportListKeydown で処理）
+  function reportCardHtml(r) {
+    const browserBtn = r.exists
+      ? `<button class="btn btn-ghost btn-sm" data-action="open-report-browser" data-id="${r.id}" title="OS既定のブラウザで開きます（印刷したいときはこちら）">ブラウザで開く</button>`
+      : "";
+    const missing = r.exists ? "" : `<p class="report-card-missing">ファイルが見つかりません</p>`;
+    return `
+      <li class="report-card" data-id="${r.id}" tabindex="0" role="button" aria-selected="false">
+        <div class="report-card-row">
+          <span class="symbol">${f.escape(r.symbol)}</span>
+          <span class="muted">${f.escape(r.created_at)}</span>
+        </div>
+        <div class="report-card-row">
+          <span class="report-card-model muted">${f.escape(r.model)}</span>
+          ${browserBtn}
+        </div>
+        ${missing}
+      </li>`;
+  }
+
+  // 選択中のカードが分かるように強調する
+  function highlightSelectedReportCard() {
+    document.querySelectorAll("#report-list li[data-id]").forEach((card) => {
+      const selected = Number(card.dataset.id) === state.previewReportId;
+      card.classList.toggle("is-selected", selected);
+      card.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+  }
+
+  // プレビュー欄の表示状態をまとめて切り替える。kind: "empty" | "loading" | "error" | "ready"
+  function renderReportPreviewState(kind, payload) {
+    const placeholder = $("report-preview-placeholder");
+    const errorEl = $("report-preview-error");
+    const frameWrap = $("report-preview-frame-wrap");
+    const meta = $("report-preview-meta");
+    const openBtn = $("report-preview-open-browser");
+
+    placeholder.hidden = true;
+    errorEl.hidden = true;
+    frameWrap.hidden = true;
+    meta.hidden = true;
+    openBtn.disabled = true;
+    delete openBtn.dataset.id;
+
+    if (kind === "empty") {
+      placeholder.textContent = "レポートを作成すると、ここに表示されます";
+      placeholder.hidden = false;
+      return;
+    }
+    if (kind === "loading") {
+      placeholder.textContent = "読み込み中…";
+      placeholder.hidden = false;
+      return;
+    }
+    if (kind === "error") {
+      errorEl.textContent = payload;
+      errorEl.hidden = false;
+      return;
+    }
+    // ready: payload は get_report_html の戻り値
+    const report = payload;
+    $("report-preview-symbol").textContent = report.symbol;
+    $("report-preview-created").textContent = report.created_at;
+    $("report-preview-model").textContent = report.model;
+    $("report-preview-in").textContent = f.num(report.in_tokens);
+    $("report-preview-out").textContent = f.num(report.out_tokens);
+    meta.hidden = false;
+    // srcdoc は JS のプロパティ経由で代入する（属性には書かない）。sandbox="" は HTML 側に固定で付けてある
+    $("report-preview-frame").srcdoc = report.html;
+    frameWrap.hidden = false;
+    openBtn.disabled = false;
+    openBtn.dataset.id = String(report.id);
+  }
+
+  async function loadReportPreview(id) {
+    renderReportPreviewState("loading");
+    let report;
+    try {
+      report = await api.call("get_report_html", id);
+    } catch (err) {
+      renderReportPreviewState("error", err.message);
+      return;
+    }
+    renderReportPreviewState("ready", report);
+  }
+
+  async function selectReport(id) {
+    state.previewReportId = id;
+    highlightSelectedReportCard();
+    await loadReportPreview(id);
+  }
+
   async function loadReports() {
     let reports;
     try {
@@ -1007,27 +1103,53 @@
       return;
     }
     $("report-list-empty").hidden = reports.length > 0;
-    $("report-list").innerHTML = reports.map((r) => {
-      const action = r.exists
-        ? `<button class="btn btn-sm" data-action="open-report" data-id="${r.id}">開く</button>`
-        : `<span class="muted">ファイルが見つかりません</span> <button class="btn btn-sm" disabled>開く</button>`;
-      return `
-        <tr>
-          <td class="muted">${f.escape(r.created_at)}</td>
-          <td class="symbol">${f.escape(r.symbol)}</td>
-          <td>${f.escape(r.model)}</td>
-          <td class="num">${f.num(r.in_tokens)}</td>
-          <td class="num">${f.num(r.out_tokens)}</td>
-          <td class="actions">${action}</td>
-        </tr>`;
-    }).join("");
+    $("report-list").innerHTML = reports.map(reportCardHtml).join("");
+
+    if (reports.length === 0) {
+      state.previewReportId = null;
+      renderReportPreviewState("empty");
+      return;
+    }
+    // 選択中のレポートが一覧から消えていたら最新（先頭）を既定表示にする。
+    // 分析ジョブ完了直後は runReportAnalyze が previewReportId を新しいレポートに合わせてから呼ぶので、
+    // ここではそのできたてのレポートがそのまま選ばれる
+    const stillListed = reports.some((r) => r.id === state.previewReportId);
+    if (!stillListed) state.previewReportId = reports[0].id;
+    highlightSelectedReportCard();
+    await loadReportPreview(state.previewReportId);
   }
 
   async function onReportListClick(e) {
-    const btn = e.target.closest("button[data-action='open-report']");
-    if (!btn) return;
+    const browserBtn = e.target.closest("button[data-action='open-report-browser']");
+    if (browserBtn) {
+      try {
+        await api.call("open_report", Number(browserBtn.dataset.id));
+      } catch (err) {
+        toast(err.message, "error", 8000);
+      }
+      return;
+    }
+    const card = e.target.closest("li[data-id]");
+    if (!card) return;
+    await selectReport(Number(card.dataset.id));
+  }
+
+  // role="button" のカードは Enter/Space で選択できるようにする（ネイティブの <button> ではないため）。
+  // フォーカスが中の「ブラウザで開く」ボタン上にあるときはそちらのネイティブな click に任せる
+  function onReportListKeydown(e) {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    if (e.target.closest("button")) return;
+    const card = e.target.closest("li[data-id]");
+    if (!card) return;
+    e.preventDefault();
+    selectReport(Number(card.dataset.id));
+  }
+
+  async function onReportPreviewOpenBrowserClick() {
+    const id = Number($("report-preview-open-browser").dataset.id);
+    if (!id) return;
     try {
-      await api.call("open_report", Number(btn.dataset.id));
+      await api.call("open_report", id);
     } catch (err) {
       toast(err.message, "error", 8000);
     }
@@ -1086,6 +1208,8 @@
         toast("AI分析を中断しました");
       } else {
         toast(job.result?.summary || "AI分析レポートを作成しました", "info", 8000);
+        // できたてのレポートがいちばん見たいはずなので、一覧の再読み込み前に選択を合わせておく
+        if (job.result?.id) state.previewReportId = job.result.id;
       }
       await loadReports();
     } finally {
@@ -1177,6 +1301,8 @@
     });
     $("report-run").addEventListener("click", runReportAnalyze);
     $("report-list").addEventListener("click", onReportListClick);
+    $("report-list").addEventListener("keydown", onReportListKeydown);
+    $("report-preview-open-browser").addEventListener("click", onReportPreviewOpenBrowserClick);
     $("report-goto-settings").addEventListener("click", () => switchTab("settings"));
 
     $("export-stocks").addEventListener("click", toggleExportRow);
