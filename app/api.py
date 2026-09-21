@@ -16,6 +16,11 @@ from functools import wraps
 from pathlib import Path
 
 from . import disclosures
+from .ai import analyze
+from .ai import quota as ai_quota_mod
+from .ai import report as ai_report
+from .ai.client import GeminiClient
+from .config import REPORTS_DIR
 from .errors import UserFacingError
 from .fetcher import FetchError
 from .jobs import JobManager
@@ -226,13 +231,52 @@ class Api:
             "url": url,
         }
 
+    # ---------- AI 分析（P6-6。SPEC §2.7・§4.2）----------
+    @_response
+    def ai_quota(self):
+        """本日の使用量・残量と打ち切りフラグ（SPEC §2.7.2）。"""
+        return ai_quota_mod.Quota(self._service.db, self._require_settings()).snapshot()
+
+    @_response
+    def ai_reset_exhausted(self):
+        """打ち切りフラグの手動解除（SPEC §2.1.3・§2.7.2）。誤判定に備えた逃げ道。"""
+        cleared = ai_quota_mod.reset_exhausted(self._service.db)
+        return {"cleared": cleared}
+
+    @_response
+    def ai_estimate(self, symbol: str, days: int):
+        """実行前の確認ダイアログ用の見積り（SPEC §2.7.1）。
+
+        送れないときも例外にせず `can_run: false` と `reason` で返す（理由を画面に出すため）。
+        """
+        return analyze.estimate(self._service.db, self._require_settings(), symbol, int(days))
+
+    @_response
+    def list_reports(self):
+        """生成済みレポートの一覧（新しい順）。"""
+        return ai_report.list_reports(self._service.db)
+
+    @_response
+    def open_report(self, report_id: int):
+        """レポートの HTML を OS 既定のアプリで開く。"""
+        row = ai_report.get_report(self._service.db, int(report_id))
+        path = Path(row["path"])
+        if not path.exists():
+            raise UserFacingError(f"レポートのファイルが見つかりません: {path}")
+        webbrowser.open(path.as_uri())
+        return {"path": str(path)}
+
+    @_response
+    def open_reports_folder(self):
+        return _open_folder(REPORTS_DIR)
+
     @_response
     def test_connection(self, target: str):
         """データソースへの疎通確認（SPEC §2.1.3）。"""
         if target == "edinet":
             return _test_edinet_connection(self._require_settings())
         if target == "gemini":
-            raise UserFacingError("Gemini の接続テストはまだ実装されていません")
+            return _test_gemini_connection(self._service.db, self._require_settings())
         raise UserFacingError(f"不明な接続テスト対象です: {target}")
 
 
@@ -267,6 +311,24 @@ def _test_edinet_connection(settings: Settings) -> dict:
         # 疎通は取れている。当日の朝など、まだ公表前だと 0 件で返る
         message += "。この日の書類はまだ公表されていない可能性があります"
     return {"target": "edinet", "date": date, "documents": count, "message": message}
+
+
+def _test_gemini_connection(db, settings: Settings) -> dict:
+    """Gemini への疎通確認。最小のプロンプトを1回だけ送る。
+
+    上限（RPM/TPM/RPD）が未設定でもテストできるように `Quota.check` は通さないが、
+    **送信は1回ぶん実際に消費する**ので `ai_usage.requests` には必ず加算する
+    （CLAUDE.md の不変条件13: 送信を試みるたびに加算する）。
+    """
+    client = GeminiClient.from_settings(settings)  # キー・モデル未設定はここで UserFacingError
+    ai_quota_mod.record_request(db, client.model)
+    reply = client.ping()
+    ai_quota_mod.record_tokens(db, client.model, reply.usage.prompt_tokens, reply.usage.output_tokens)
+    return {
+        "target": "gemini",
+        "model": client.model,
+        "message": f"Gemini に接続できました（{client.model}・入出力 {reply.usage.total_tokens} トークン）",
+    }
 
 
 def _open_folder(folder: Path) -> str:

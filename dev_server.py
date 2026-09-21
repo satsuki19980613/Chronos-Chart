@@ -19,6 +19,7 @@ from app.api import Api
 from app.autoupdate import AutoUpdater
 from app.config import CSV_DIR, DATA_DIR, DB_PATH, WEB_DIR
 from app.database import Database
+from app.ai.analyze import ai_analyze_job
 from app.disclosures import disclosures_job
 from app.fetcher import YahooFetcher
 from app.jobs import JobManager, selftest_job
@@ -77,6 +78,7 @@ def main() -> None:
     jobs.register("auto_update", AutoUpdater(db, service, settings).run)
     jobs.register("short_all", short_all_job(db, settings))
     jobs.register("disclosures", disclosures_job(db, settings))
+    jobs.register("ai_analyze", ai_analyze_job(db, settings))
     jobs.register("selftest", selftest_job)
     api = Api(service, jobs, settings)
 

@@ -25,6 +25,7 @@ from .. import config
 from ..errors import Cancelled, UserFacingError
 from .client import GeminiClient, QuotaExceeded, Reply
 from .prompt import PromptInput, PromptSource, build_prompt, build_retry_prompt
+from . import report
 from .quota import Quota, apply_quota_hit
 from .schema import AnalysisReport
 
@@ -282,3 +283,51 @@ def run_analysis(
         f"Gemini の応答がスキーマに合わず、{total}回試しても解決しませんでした。"
         "生の応答の保存にも失敗しました"
     )
+
+
+def ai_analyze_job(db: Any, settings: Any) -> Callable[[Any, dict], dict]:
+    """`jobs.register("ai_analyze", ai_analyze_job(db, settings))` に渡すジョブ関数を組み立てる。
+
+    AI 分析は**手動実行のみ**（SPEC §2.7.1）。起動時の自動更新には含めない。
+    レポートの生成と保存までをこのジョブで行い、画面には保存した1件の情報を返す。
+    """
+
+    def job(ctx: Any, params: dict) -> dict:
+        symbol = (params or {}).get("symbol")
+        days = (params or {}).get("days")
+        if not symbol:
+            raise UserFacingError("分析する銘柄が指定されていません")
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise UserFacingError(f"期間の指定が不正です: {days}") from None
+
+        result = run_analysis(
+            db,
+            settings,
+            symbol,
+            days,
+            progress=ctx.progress,
+            cancel=ctx.cancel,
+            sleep=ctx.wait,  # 中断されたらすぐ Cancelled になる待機
+        )
+
+        ctx.progress(1, 1, "レポート生成中")
+        html = report.render_report(result.data, result.report, model=result.model)
+        saved = report.save_report(
+            db,
+            config.REPORTS_DIR,
+            symbol,
+            html,
+            model=result.model,
+            in_tokens=result.in_tokens,
+            out_tokens=result.out_tokens,
+        )
+        saved["attempts"] = result.attempts
+        saved["summary"] = (
+            f"{result.data.name}（{symbol}）の分析レポートを作成しました"
+            f"（直近{result.data.days}日・{result.model}・入力 {result.in_tokens:,} / 出力 {result.out_tokens:,} トークン）"
+        )
+        return saved
+
+    return job

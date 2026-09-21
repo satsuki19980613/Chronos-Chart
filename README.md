@@ -7,7 +7,7 @@ Yahoo! Finance から個別銘柄の株価（始値・高値・安値・終値�
 
 > [Autotechnical](https://github.com/satsuki19980613/Autotechnical) を土台に開発しています。
 > 仕様は [docs/SPEC.md](docs/SPEC.md)、進捗は [docs/PLAN.md](docs/PLAN.md) を参照してください。
-> 株価・テクニカル指標・需給・法定開示・起動時の自動更新は動作します。**Gemini による AI 分析レポートの生成はまだ実装されていません**（開発中）。
+> 株価・テクニカル指標・需給・法定開示・起動時の自動更新・**Gemini による AI 分析レポート**まで動作します（通しの動作確認が残っています）。
 
 - **GUI**: Python + [pywebview](https://pywebview.flowrl.com/)（画面は HTML / CSS / JavaScript）
 - **株価の取得**: [yfinance](https://github.com/ranaroussi/yfinance)
@@ -56,12 +56,25 @@ Yahoo! Finance から個別銘柄の株価（始値・高値・安値・終値�
 - ファイル名: `technical_<日時>_<銘柄>.md` / `.csv`
 - **需給データ（空売り残高・貸借取引残高）は出力に含まれません**（規約により画面表示のみ。§注意事項）
 
+### レポート画面（AI 分析レポート）
+- 銘柄と期間（直近20日 / 60日 / 120日）を選び、**手動で実行**します（自動実行・定期実行はしません）
+- 実行前に確認ダイアログで、使用モデル・**入力トークンの見積り**（`count_tokens` の実測）・本日の残量（RPD／TPM）・
+  送信されるデータの種別を表示します
+- **送信するのは銘柄情報・株価・テクニカル指標・EDINET の開示一覧（本文は含まない）だけです。**
+  需給データ（空売り残高・貸借取引残高）は送信しません（[注意事項](#注意事項)）
+- Gemini には JSON だけを返させ（HTML は書かせない）、レポートの HTML はアプリ側が組み立てて
+  `data/reports/report_<銘柄>_<日時>.html` に保存します。一覧から「開く」で既定のブラウザで開けます
+- レポートには免責（投資助言ではない・AI の出力を検証していない・データの出典・**決算短信や業績修正は対象外**）を必ず載せます
+- 使用量は太平洋時間の日付ごとに数えます（無料枠のリセットが太平洋時間の0時＝日本時間の当日16時または17時のため）。
+  日次上限の 429 を受けた場合はその日そのモデルへの送信を打ち切り、設定タブから手動で解除できます
+
 ### 設定タブ
 - **起動時の自動更新**: オン／オフの切り替え、空売り残高を自動更新に含めるかの切り替え（既定オフ）、
   前回の取得から何分以内はスキップするか
 - **EDINET（法定開示）**: API キーの入力・削除・表示、取得手順（サインアップ → CAPTCHA → パスワード → MFA → 連絡先入力の5段階）へのリンク、接続テスト
-- **Gemini（AI 分析）**: API キー・モデル名・利用上限（RPM／TPM／RPD）・出力トークン上限・thinking の予算の入力欄
-  （**AI 分析そのものは未実装のため、接続テストや実行はまだできません**）
+- **Gemini（AI 分析）**: API キー・モデル名・利用上限（RPM／TPM／RPD）・出力トークン上限・thinking の予算の入力欄、
+  接続テスト、打ち切りフラグの手動解除。**RPM・TPM・RPD のいずれかが 0 の間は AI 機能が無効**です
+  （無料枠の数値は公式ドキュメントに表が無いため、[AI Studio のレート制限ページ](https://aistudio.google.com/rate-limit)で自分の値を確認して入力してください）
 - **空売り残高の取得（karauri.net）**: User-Agent に載せる連絡先、リクエスト間隔（既定10秒・下限5秒）、同一銘柄を再取得しない時間
 - 各データソースの出典・規約の要約と、取得したデータを再配布しない旨の表示
 - データ保存先がクラウド同期フォルダ（OneDrive 等）の配下にあると推定される場合の警告
@@ -138,13 +151,15 @@ python main.py
 data/
 ├── chronos.db                  # SQLite（stocks / prices / indicators / settings / fetch_log /
 │                                #   short_positions / short_totals / margin_balances /
-│                                #   edinet_codes / disclosures / disclosure_links）
+│                                #   edinet_codes / disclosures / disclosure_links /
+│                                #   ai_usage / ai_reports）
 ├── csv/
 │   ├── 7203.T_株価.csv               # 日付・始値・高値・安値・終値・出来高
 │   └── 7203.T_テクニカル指標.csv     # 日付・終値・日ごとのテクニカル指標
 ├── edinet_cache/                # EDINET documents.json の日次キャッシュ（YYYY-MM-DD.json.gz）
 │                                #   銘柄で絞り込む前の生データ。銘柄を後から登録したときの再走査に使う
-└── logs/app.log
+├── reports/                     # AI 分析レポート（report_<銘柄>_<日時>.html。単一 HTML）
+└── logs/app.log                 # AI の応答がスキーマに合わなかったときの生ログもここに残る
 output/                               # 出力タブで作成した AI 向けファイル
 ```
 
@@ -190,7 +205,8 @@ app/
 ├── indicators.py    テクニカル指標の計算・シグナル判定
 ├── database.py      SQLite 操作・マイグレーション
 ├── csv_export.py    閲覧用 CSV 出力
-├── ai_export.py     AI 向け CSV / Markdown 出力
+├── ai_export.py     AI 向け CSV / Markdown 出力（出力タブ。AI 分析レポートとは別物）
+├── ai/              AI 分析レポート（client / quota / prompt / schema / analyze / report）
 ├── config.py        パス・定数
 ├── settings.py      設定の読み書き・API キー（keyring）の管理
 ├── errors.py        画面に表示するエラー（UserFacingError）
@@ -226,6 +242,12 @@ tests/               pytest
 | `test_indicators.py` / `test_indicators_reference.py` | 指標の計算（ループで書いた独立実装との突き合わせ・境界値） |
 | `test_service.py` / `test_api.py` | 登録・更新・分割・削除・出力、JS 向け API の正常系/異常系/並行実行 |
 | `test_export.py` | AI 向け CSV/Markdown と閲覧用 CSV の形式 |
+| `test_ai_client.py` | Gemini クライアント（1呼び出し＝1送信・429 の判別・キーを漏らさないこと） |
+| `test_ai_quota.py` | クォータ管理（太平洋時間の日付・送信前の加算・RPM/TPM の窓・打ち切りと解除） |
+| `test_ai_prompt.py` | プロンプトとスキーマ（**需給が混ざらないことの番兵値テスト**） |
+| `test_ai_schema.py` | 検証と再依頼（`MAX_TOKENS`・スキーマ不一致の再依頼・429 の分岐） |
+| `test_report.py` | レポート HTML（**需給を載せない**・AI の出力のエスケープ・保存と一覧） |
+| `test_api_ai.py` | AI 関連の API とレポート生成ジョブ |
 | `test_dev_server.py` | 開発用サーバーの HTTP 応答・不正リクエスト・パストラバーサル |
 | `test_migration.py` | マイグレーションの冪等性・既存 DB からの移行 |
 | `test_settings.py` | 設定の読み書き、API キーの `keyring` 保存・環境変数優先・マスク、同期フォルダの検出 |
