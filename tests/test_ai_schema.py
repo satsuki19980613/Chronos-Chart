@@ -63,12 +63,14 @@ def _settings(db: Database, *, rpm: int = 60, tpm: int = 1_000_000, rpd: int = 1
 def _valid_report_json() -> str:
     report = AnalysisReport(
         technical=SectionAnalysis(evidence=["株価が上昇"], assessment="堅調"),
+        fundamental=SectionAnalysis(evidence=["財務数値は未取得"], assessment="未取得"),
         disclosure=SectionAnalysis(evidence=["開示なし"], assessment="材料なし"),
         risks=["市場全体の変動"],
         watch_points=["次回の開示"],
         verdict="neutral",
         confidence="low",
         summary="総括",
+        data_scope_note="会社予想との比較は対象外。同業他社との比較は対象外。需給データは分析に含まない。",
     )
     return report.model_dump_json()
 
@@ -410,3 +412,25 @@ def test_analyze_source_does_not_reference_supply_identifiers():
     text = Path(analyze.__file__).read_text(encoding="utf-8")
     for token in ["short_", "margin_", "taisyaku", "karauri"]:
         assert token not in text, f"analyze.py に禁止識別子 {token!r} が含まれている"
+
+
+# ---------------------------------------------------------------------------
+# P11-6: AnalysisReport のフィールド定義順（SPEC §2.7.4・§2.9.9。「根拠→結論」を崩さない）
+# ---------------------------------------------------------------------------
+def test_analysis_report_field_order_is_evidence_before_conclusion():
+    """`fundamental` は `technical` と `disclosure` の間、`data_scope_note` は最後（`summary` の後）。
+
+    Pydantic のフィールド定義順がそのまま Gemini への出力順（response_schema）になるため、
+    この順序は仕様そのもの（先に結論を出させると根拠が後付けになる）。
+    """
+    assert list(AnalysisReport.model_fields.keys()) == [
+        "technical",
+        "fundamental",
+        "disclosure",
+        "risks",
+        "watch_points",
+        "verdict",
+        "confidence",
+        "summary",
+        "data_scope_note",
+    ]

@@ -168,9 +168,9 @@
     text-align: right;
     font-variant-numeric: tabular-nums;
   }
-  /* KPI の増減は色で良し悪しを言わない（▲▼の記号だけで方向を示す。本文色のまま） */
-  .kpi-card .kpi-delta { font-size: 0.85rem; text-align: right; margin-top: 2px; }
-  .kpi-card .kpi-delta.is-na { color: var(--muted); }
+  /* KPI の増減・トレンドは色で良し悪しを言わない（↑↓→の記号だけで方向を示す。本文色のまま） */
+  .kpi-card .kpi-delta, .kpi-card .kpi-trend { font-size: 0.85rem; text-align: right; margin-top: 2px; }
+  .kpi-card .kpi-delta.is-na, .kpi-card .kpi-trend.is-na { color: var(--muted); }
   .kpi-card .kpi-spark { margin-top: 6px; }
   .kpi-card .kpi-note { font-size: 0.76rem; color: var(--muted); text-align: right; margin-top: 2px; }
 
@@ -310,36 +310,83 @@
 
 <h2 id="financials">財務ハイライト</h2>
 {% if fin.available %}
-<p class="fin-meta">会計基準: {{ fin.standard_label }} ／ {{ fin.basis_label }} ／ 対象期: {{ fin.period_range }}</p>
+<p class="fin-meta">
+  会計基準: {{ fin.standard_label }} ／ {{ fin.basis_label }}
+  {% if fin.period_range %}／ 対象期: {{ fin.period_range }}{% endif %}
+  ／ 値は開示値そのまま・アプリで計算した値の両方を含む（各行の「出所」列を参照）
+</p>
+{% if fin.kpis %}
 <div class="kpi-grid">
   {% for kpi in fin.kpis %}
   <div class="kpi-card">
     <div class="kpi-label">{{ kpi.label }}</div>
     <div class="kpi-value">{{ kpi.value_display }}</div>
     <div class="kpi-delta {{ kpi.delta['class'] }}">{{ kpi.delta.text }}</div>
+    <div class="kpi-trend {{ kpi.trend_display['class'] }}">{{ kpi.trend_display.text }}</div>
     {% if kpi.note %}<div class="kpi-note">{{ kpi.note }}</div>{% endif %}
     {% if kpi.spark_svg %}<div class="kpi-spark">{{ kpi.spark_svg | safe }}</div>{% endif %}
   </div>
   {% endfor %}
 </div>
+{% endif %}
 
-<h3>業績5期推移</h3>
-<figure class="chart-figure">{{ fin.performance_svg | safe }}</figure>
+{% for figure in fin.figures %}
+<h3>{{ figure.title }}</h3>
+<figure class="chart-figure">{{ figure.svg | safe }}</figure>
+{% endfor %}
 
-<h3>キャッシュフロー5期推移</h3>
-<figure class="chart-figure">{{ fin.cf_svg | safe }}</figure>
+{% if fin.metric_rows %}
+<h3>財務指標の詳細</h3>
+<table class="data-table">
+  <thead>
+    <tr><th>指標</th><th class="num">最新値</th><th class="num">前期比</th><th>トレンド</th><th class="num">CAGR</th><th class="num">レンジ内の位置</th><th>出所</th></tr>
+  </thead>
+  <tbody>
+    {% for row in fin.metric_rows %}
+    <tr>
+      <td>{{ row.label }}</td>
+      <td class="num">{{ row.value_display }}</td>
+      <td class="num">{{ row.change_display.text }}</td>
+      <td>{{ row.trend_display.text }}</td>
+      <td class="num">{{ row.cagr_display }}</td>
+      <td class="num">{{ row.percentile_display }}</td>
+      <td>{{ row.source_label }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
 
-<h3>自己資本比率・ROEの推移</h3>
-<figure class="chart-figure">{{ fin.ratio_svg | safe }}</figure>
-
-<h3>PERの過去レンジと現在値</h3>
-<figure class="chart-figure">{{ fin.per_svg | safe }}</figure>
-{% else %}
-<p class="empty-note">
-  財務数値はまだ取得していません。有価証券報告書（EDINET）からの財務数値の取り込み機能が実装されると、
-  このセクションに業績・キャッシュフロー・自己資本比率・ROE・PER などの推移が自動的に表示されます。
+{% if fin.interim %}
+<h3>中間期（半期報告書）の実績</h3>
+<p class="caveat">
+  ※ 中間期（6か月）の数値です。通期の系列とは合算していません。前年同期（{{ fin.interim.prior_period_end or "データなし" }}）と比較してください。
 </p>
-<figure class="chart-figure">{{ fin.placeholder_svg | safe }}</figure>
+<table class="data-table">
+  <thead>
+    <tr><th>指標</th><th class="num">値（{{ fin.interim.period_end }}）</th><th class="num">前年同期比</th></tr>
+  </thead>
+  <tbody>
+    {% for row in fin.interim.rows %}
+    <tr>
+      <td>{{ row.label }}</td>
+      <td class="num">{{ row.value_display }}</td>
+      <td class="num">{{ row.change_display.text }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if fin.notes %}
+<ul class="plain-list">
+  {% for note in fin.notes %}
+  <li>{{ note }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% else %}
+<p class="empty-note">財務数値は未取得です（有価証券報告書の取り込みが行われていません）。</p>
 {% endif %}
 
 <h2 id="technical">テクニカルの観点</h2>
@@ -348,6 +395,14 @@
 <p>{{ report.technical.assessment }}</p>
 <ul class="evidence-list">
   {% for item in report.technical.evidence %}
+  <li>{{ item }}</li>
+  {% endfor %}
+</ul>
+
+<h2 id="fundamental">財務の観点</h2>
+<p>{{ report.fundamental.assessment }}</p>
+<ul class="evidence-list">
+  {% for item in report.fundamental.evidence %}
   <li>{{ item }}</li>
   {% endfor %}
 </ul>
@@ -466,6 +521,27 @@
 </table>
 {% else %}
 <p class="empty-note">期間内の開示はありません。</p>
+{% endif %}
+
+<p class="caveat data-scope-note"><strong>分析の参照範囲:</strong> {{ report.data_scope_note }}</p>
+
+{% if verify %}
+<p class="caveat verify-note">
+  <strong>数値の実在検証:</strong>
+  {% if verify.checked == 0 %}
+  根拠等に数値・日付の引用が無かった（検証対象なし）。
+  {% elif verify.all_found %}
+  根拠等に現れた数値・日付は{{ verify.checked }}件すべて（{{ verify.rate_display }}）がプロンプトのデータに実在した。
+  {% else %}
+  根拠等に現れた数値・日付{{ verify.checked }}件のうち{{ verify.found }}件（{{ verify.rate_display }}）がプロンプトのデータに実在した。実在しなかったもの:
+  <ul class="plain-list">
+    {% for m in verify.missing %}
+    <li>{{ m.number }}（{{ m.field }}）: {{ m.text }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {{ verify.limitation_note }}
+</p>
 {% endif %}
 
 <section class="disclaimer">

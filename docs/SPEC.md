@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 |---|---|
-| 版 | 1.1 |
+| 版 | 1.6 |
 | 作成日 | 2026-09-20 |
-| 最終更新 | 2026-09-20 |
+| 最終更新 | 2026-09-21 |
 | 状態 | **レビュー反映済み**（[REVIEW_RESULT.md](REVIEW_RESULT.md) の指摘とユーザー決定を反映） |
 | 土台 | Autotechnical (satsuki19980613/Autotechnical) |
 | 関連文書 | [RESEARCH.md](RESEARCH.md) 調査結果 / [DESIGN.md](DESIGN.md) 設計方針 / [PLAN.md](PLAN.md) 実装計画 / [REVIEW_RESULT.md](REVIEW_RESULT.md) 設計レビュー |
@@ -936,34 +936,82 @@ AI に多角的な分析をさせるために、有価証券報告書・半期�
 - 対象は `docTypeCode` が **120（有価証券報告書）・160（半期報告書）**、およびそれらの訂正（130・170）
 - 取得は**開示の取得ジョブとは別のジョブ**にする。1銘柄あたり年2件程度なので、レート制限（1秒間隔）で足りる
 
-#### 2.9.2 CSV の構造（実物で確認済み。2026-09-21）
+#### 2.9.2 CSV の構造（実物で確認済み。2026-09-21・4件で再確認）
 
-ソフトバンクグループの有報（`S100YGH5`・IFRS）と日本基準の会社の有報（`S100Y62Z`）で確認した。
+日本基準の有報（タキヒヨー）・IFRS の有報（ソフトバンクグループ）・半期報告書（モロゾフ）・
+**連結決算を作っていない会社の有報**（ユーザーローカル）の4件で確認した。
 
 - ZIP の中に `XBRL_TO_CSV/` があり、書類の構成要素ごとに CSV が入る。
-  **本体は `jpcrp030000-asr-*.csv`**（半期報告書は `jpcrp050000-ssr-*` 系）。監査報告書（`jpaud-*`）は使わない
+  本体は **`jpcrp<6桁>-asr-…`（有価証券報告書）／ `jpcrp<6桁>-ssr-…`（半期報告書）**。
+  実物の半期報告書は **`jpcrp040300-ssr-001_…`** だった（当初 `jpcrp050000-ssr` と書いていたのは誤り）。
+  府令番号は様式で変わるので、**`jpcrp` で始まり `-asr-` か `-ssr-` を含む CSV** で選ぶ。監査報告書（`jpaud-*`）は使わない
 - **文字コードは UTF-16LE（BOM あり）、区切りはタブ。** 拡張子は `.csv` だが実体は TSV。
   素朴に `pd.read_csv` すると失敗する
 - 列は9つ: `要素ID` / `項目名` / `コンテキストID` / `相対年度` / `連結・個別` / `期間・時点` / `ユニットID` / `単位` / `値`
-- 規模の実測: ZIP 248KB・CSV 1.4MB・2,237行（IFRS）／ ZIP 127KB・CSV 920KB・1,842行（日本基準）
+- **値が無い行は全角ハイフン `－`（U+FF0D）**。空文字ではない。取り込まずに捨てる
+- 規模の実測: ZIP 248KB・2,236行（IFRS 有報）／ 127KB・1,842行（日本基準 有報）／
+  67KB・815行（単体のみの有報）／ 22KB・479行（半期報告書）
+
+#### 2.9.2a 会計基準・会計期間は DEI から取る
+
+CSV には `jpdei_cor:` で始まる書類属性（DEI）の行が入っている。日付の計算も会計基準の判定もここから行う。
+
+| 要素ID | 値の例 | 使い道 |
+|---|---|---|
+| `AccountingStandardsDEI` | `Japan GAAP` / `IFRS`（`US GAAP` は未観測） | `standard`（`jgaap` / `ifrs` / `usgaap`） |
+| `TypeOfCurrentPeriodDEI` | `FY`（有報）/ `HY`（半期報） | 書類の会計期間の種類 |
+| `CurrentFiscalYearEndDateDEI` | `2026-03-31` | 当事業年度末 |
+| `CurrentPeriodEndDateDEI` | 有報は事業年度末と同じ／半期報は**中間期末** | 中間期の期間末日 |
+| `ComparativePeriodEndDateDEI` | `2025-07-31` | 半期報の**前中間期末** |
+| `PreviousFiscalYearEndDateDEI` | `2025-03-31` | 前事業年度末 |
+| `WhetherConsolidatedFinancialStatementsArePreparedDEI` | `true` / `false` | 連結決算の有無 |
 
 #### 2.9.3 取り込む範囲 —「主要な経営指標等の推移」に限定する
 
-有報冒頭の「主要な経営指標等の推移」は、**標準要素（`jpcrp_cor:...SummaryOfBusinessResults`）で最大5期分**が取れる。
-実測で32種類が存在し、次が揃う:
-
-| 種別 | 取れるもの |
-|---|---|
-| 損益 | 売上高／売上収益（`NetSales...` / `RevenueIFRS...`）、経常利益（日本基準のみ）、税引前利益（IFRS）、当期純利益／親会社株主帰属利益、包括利益 |
-| 財政状態 | 総資産、純資産、自己資本（IFRS は親会社所有者帰属持分） |
-| CF | 営業・投資・財務の各キャッシュフロー、現金及び現金同等物 |
-| 1株当たり | EPS（基本・希薄化）、1株当たり純資産、1株当たり配当 |
-| **発行体が算出済みの比率** | **ROE・自己資本比率・PER・配当性向** |
-| その他 | 発行済株式数、資本金 |
-
-**ROE・自己資本比率・PER は発行体が計算して開示している値をそのまま採用する**（自前で再計算しない）。
+有報冒頭の「主要な経営指標等の推移」は、**標準要素（`jpcrp_cor:…SummaryOfBusinessResults`）で最大5期分**が取れる。
 本表（`jppfs_cor` / `jpigp_cor`）からの科目取得は**初期リリースの対象外**とする（§11）。
 会計基準ごとの要素差と企業拡張要素への対応が必要になり、得られるものに対して負担が大きいため。
+
+**要素ID → 項目名（`item`）の対応**（実測。表に無い要素IDは黙って捨てる）:
+
+| item | 日本基準・共通 | IFRS |
+|---|---|---|
+| `revenue` | `NetSales…` ／ 無ければ `OperatingRevenue1…` | `RevenueIFRS…` |
+| `ordinary_income` | `OrdinaryIncomeLoss…` | （無し） |
+| `pretax_income` | （無し） | `ProfitLossBeforeTaxIFRS…` |
+| `net_income` | `ProfitLossAttributableToOwnersOfParent…` ／ 無ければ `NetIncomeLoss…`（単体の表） | `ProfitLossAttributableToOwnersOfParentIFRS…` |
+| `comprehensive_income` | `ComprehensiveIncome…` | `ComprehensiveIncomeAttributableToOwnersOfParentIFRS…` |
+| `net_assets` | `NetAssets…` | （無し） |
+| `equity` | （無し。**日本基準の推移表に自己資本の項目は無い**） | `EquityAttributableToOwnersOfParentIFRS…` |
+| `total_assets` | `TotalAssets…` | `TotalAssetsIFRS…` |
+| `bps` | `NetAssetsPerShare…` | **`EquityToAssetRatioIFRS…`** |
+| `eps` / `diluted_eps` | `BasicEarningsLossPerShare…` / `DilutedEarningsPerShare…` | `BasicEarningsLossPerShareIFRS…` / `DilutedEarningsLossPerShareIFRS…` |
+| `equity_ratio` | `EquityToAssetRatio…` | `RatioOfOwnersEquityToGrossAssetsIFRS…` |
+| `roe` | `RateOfReturnOnEquity…` | `RateOfReturnOnEquityIFRS…` |
+| `per` | `PriceEarningsRatio…` | `PriceEarningsRatioIFRS…` |
+| `operating_cf` / `investing_cf` / `financing_cf` | `NetCashProvidedByUsedIn{Operating,Investing,Financing}Activities…` | `CashFlowsFromUsedIn{Operating,Investing,Financing}ActivitiesIFRS…` |
+| `cash_and_equivalents` | `CashAndCashEquivalents…` | `CashAndCashEquivalentsIFRS…` |
+| `dps` / `payout_ratio` / `shares_outstanding` / `capital_stock` | `DividendPaidPerShare…` / `PayoutRatio…` / `TotalNumberOfIssuedShares…` / `CapitalStock…` | （**提出会社の表にしかない。§2.9.4 の例外を参照**） |
+
+**`EquityToAssetRatioIFRSSummaryOfBusinessResults` は自己資本比率ではない。**
+実物の項目名は「１株当たり親会社所有者帰属持分（IFRS）」、単位は `JPYPerShares`、実測値は3,000円台だった。
+要素IDの字面どおりに `equity_ratio` へ割り当てると、比率のはずの欄に千円単位の金額が入る。**`bps` に割り当てる。**
+IFRS の本当の自己資本比率は `RatioOfOwnersEquityToGrossAssetsIFRS…` のほう。
+
+**営業利益は推移表に無い**（日本基準は経常利益、IFRS は税引前利益が載る）。米国基準は未観測で、
+`docs/research/xbrl-edinet.md` からの推定（`RevenuesUSGAAP…` ほか3種）を入れてあるだけなので、実物を見たら見直す。
+
+**ROE・自己資本比率・PER・配当性向は発行体が計算して開示している値をそのまま採用する**（自前で再計算しない）。
+
+**単位の正規化**: `ユニットID` 列で判定する（`単位` 列は空のことがある）。
+
+| ユニットID | 変換 | 保存する `unit` |
+|---|---|---|
+| `JPY` | そのまま | `JPY` |
+| `JPYPerShares` | そのまま | `JPY/share` |
+| `shares` | そのまま | `shares` |
+| `pure`（`roe` / `equity_ratio` / `payout_ratio`） | **100倍する**（実測: 自己資本比率 `0.638` = 63.8%） | `%` |
+| `pure`（`per`） | **100倍しない**（実測: PER `11.7` = 11.7倍） | `times` |
 
 #### 2.9.4 コンテキストの選択規則（**重要**）
 
@@ -972,19 +1020,52 @@ AI に多角的な分析をさせるために、有価証券報告書・半期�
 
 | コンテキストID | 扱い |
 |---|---|
-| `CurrentYearDuration` / `CurrentYearInstant` / `Prior1〜4YearDuration` / `Prior1〜4YearInstant`（**接尾辞なし**） | **連結・全社。これだけを採用する** |
-| `..._NonConsolidatedMember` | 単体。連結が1件も無い会社のときだけフォールバックで使い、`basis='nonconsolidated'` を記録する |
-| `..._<その他>Member`（セグメント別など） | 採用しない |
+| `CurrentYear{Duration,Instant}` / `Prior1〜4Year{Duration,Instant}`（**接尾辞なし**） | 通期（FY）。**連結・全社** |
+| `Interim{Duration,Instant}` / `Prior1Interim{Duration,Instant}` | 中間期（HY）。半期報告書だけに出る |
+| `…_NonConsolidatedMember` | 単体。§2.9.4 の規則で使う |
+| `…_<その他>Member`（セグメント別など） | 採用しない |
 
 `jppfs_cor:NetSales` の当期の行は、実測でセグメント内訳を含めて10行あった。
 **接尾辞なしのコンテキストだけを採る**というこの規則が、要素ID×コンテキストの組み合わせ爆発を防ぐ唯一の砦になる。
 
+**コンテキストID → 期間の末日**（CSV に日付の列は無いので DEI から計算する）:
+
+- `fy_base` ＝ 書類が FY なら `CurrentFiscalYearEndDateDEI`、HY なら `PreviousFiscalYearEndDateDEI`
+- `CurrentYear*` → `fy_base`
+- `PriorNYear*` → `fy_base` の `offset` 年前。`offset` は書類が FY なら `N`、**HY なら `N − 1`**
+  （半期報の `Prior1YearDuration` は「前事業年度」＝ `fy_base` そのもの。実測で確認）
+- `Interim*` → `CurrentPeriodEndDateDEI`、`Prior1Interim*` → `ComparativePeriodEndDateDEI`
+- **N 年前は「月末を保って」求める。** `fy_base` がその月の末日なら N 年前もその月の末日にする
+  （2026-02-28 の2年前は **2024-02-29**）。うるう年で1日ずれると、同じ期の行が別の期として二重に入る
+
+**連結／単体の選び方**:
+
+1. 接尾辞なしのコンテキストの行が1行でもあれば `basis='consolidated'`
+2. 1行も無ければ `basis='nonconsolidated'` で `_NonConsolidatedMember` の行を採る。
+   実測で、連結決算を作っていない会社（`WhetherConsolidatedFinancialStatementsArePreparedDEI` が `false`）の書類には
+   **`_NonConsolidatedMember` のコンテキストしか存在しなかった**
+3. **例外**: `dps` / `payout_ratio` / `shares_outstanding` / `capital_stock` は
+   「提出会社の状況」の表にしか無く、**連結側には存在しない**（IFRS・日本基準とも実測）。
+   連結を採用した書類でも、この4項目だけは `_NonConsolidatedMember` から補い、採用した `basis` で保存する。
+   1株当たり配当額・発行済株式総数・資本金・配当性向は会社そのものの数字で、連結と単体で意味が変わらないため
+
+#### 2.9.4a 通期と中間期を混ぜない
+
+半期報告書には**中間期（6か月）の数値と前事業年度（12か月）の数値が同居する**。
+同じ `revenue` として1本の系列に並べると、前期比が「半年 ÷ 1年」になって成長率が壊れる。
+
+- `financials.period_type` に `'FY'`（通期）か `'HY'`（中間期）を持つ
+- 指標の算出（§2.9.6）と AI への受け渡し（§2.9.7）は **`FY` の系列だけ**を使う
+- 中間期は**最新の1期と、その前年同期**だけを別枠で持ち、「直近の中間期は前年同期比で○%」という形でだけ使う
+- 中間期末と事業年度末が同じ日付になることはないので、主キーには入れない
+
 #### 2.9.5 訂正報告書の扱い
 
-- 同一の `(symbol, 会計期間の末日)` について、**提出日が最も新しい書類の値を正とする**（上書き）
+- 同一の `(symbol, 会計期間の末日, 項目, 連結/単体)` について、**提出日が最も新しい書類の値を正とする**（上書き）
 - 訂正報告書は「軽微訂正の対比表示」と「全文差し替え」の2通りがあり得るため、
-  **訂正書類に当該項目が無ければ、元の書類の値を残す**（欠損で上書きしない）
+  **訂正書類に当該項目が無ければ、元の書類の値を残す**（欠損で上書きしない。銘柄単位・期間単位の DELETE を書かない）
 - 取り込んだ元の `doc_id` と提出日時を必ず記録し、どの書類由来かを追えるようにする
+- 取り込みを試した書類は成否によらず `financial_docs` に残し、毎回取り直さない
 
 #### 2.9.6 算出する指標（アプリ側で計算する）
 
@@ -1000,8 +1081,30 @@ LLM は表の中の数値同士を突き合わせた計算を苦手とする（`
 | 営業CFマージン | 営業CF ÷ 売上高 |
 | フリーキャッシュフロー | 営業CF ＋ 投資CF（符号のまま加算） |
 | アクルーアル（利益の質） | (当期純利益 − 営業CF) ÷ 総資産 |
-| 自己ヒストリカルの位置 | 取得できた期数の中での順位・レンジ内の位置（PER・ROE・自己資本比率など） |
-| トレンド | 各指標について `改善` / `横ばい` / `悪化` の3値。判定規則は実装時に定め、本節に追記する |
+| 自己ヒストリカルの位置 | 取得できた期数の中でのレンジ内の位置（0〜100。最小=0・最大=100。全期間が同値なら 50） |
+| トレンド | 各指標について `改善` / `横ばい` / `悪化` の3値（判定規則は下記） |
+
+**前期比と CAGR の出し方**（`app/financial_metrics.py`）:
+
+- 単位が `%` の指標（ROE・自己資本比率・各成長率・営業CFマージン・アクルーアル）の前期比は
+  **変化率ではなくポイント差**にする。ROE 2% → 8% を「前期比 +300%」と書くと必ず誤読されるため。
+  出力には `change_kind`（`'pct'` / `'pt'`）を添えて、表示側が「＋2.1pt」と「＋12.3%」を書き分けられるようにする
+- **CAGR を出すのは金額（`JPY`）と1株当たり（`JPY/share`）の指標だけ。** 比率（`%`）と倍率（`times`）の
+  複利成長率は解釈できないので常に空にする
+- 前期が 0 のとき、および**前期と当期で符号がまたぐとき**（赤字→黒字など）は前期比・CAGR を出さず、
+  理由を注記に回す。「−3,000%」のような無意味な数字を AI に渡さない
+- 変化率の分母は**前期の絶対値**にする。赤字が縮小したときに符号が反転して「悪化」と出るのを避けるため
+
+**トレンドの判定規則**:
+
+- 有効な値（欠損でない値）が1個以下なら判定しない。2個なら前期比だけで判定する
+- 3個以上あれば**直近3期**を見て、2つの一期比（旧→中・中→新）の平均を代表の変化率とする
+  （単発の期のブレで判定が振れるのを防ぐ）。片方しか算出できなければその一期比だけを使う
+- 閾値は、金額系の指標が**変化率 ±5%**、比率（`%`）の指標が**ポイント差 ±0.5pt**。
+  閾値ちょうどは `横ばい`
+- **アクルーアルは符号を反転してから判定する**（小さいほど利益の質が高いため）
+- **PER・配当性向・総資産・自己資本はトレンドを判定しない**（増減の良し悪しを一概に言えない）。
+  判定する指標は `TREND_JUDGED_KEYS` に明示する
 
 - **会社予想に対する進捗率・達成率は算出しない。** 会社予想は TDnet にしか無く、本ツールでは取得できない（§1.3）
 - 合成スコア（Piotroski F-Score・Altman Z-Score・Beneish M-Score 等）は**初期リリースでは作らない**。
@@ -1026,6 +1129,25 @@ LLM は表の中の数値同士を突き合わせた計算を苦手とする（`
 - **それより前は、日々の値を送らず**「シグナルの発生日」と要約統計（期間の高値・安値・始値・終値、
   各指標のトレンド方向、直近値との乖離）に置き換える
 - 指標の定義表は現状どおり添える（静的な文章で、銘柄によらない）
+- 見出しで「どこからどこまでが生の値で、どこが要約か」を明示する。
+  AI が「20日より前の日々の値は与えられていない」と理解できないと、無い値を引用する
+
+**圧縮区間の指標の方向判定**（`app/ai/prompt.py`。`改善/悪化` ではなく `上昇 / 横ばい / 下落`）:
+
+- `indicators.value_kind` が `pct` を返す列（RSI・RCI・ストキャス・DI/ADX・乖離率・サイコロジカル等、
+  0〜100 や −100〜100 の範囲に収まる列）は**変化率ではなく差（pt）**で見て、**±5.0pt** を閾値にする
+- それ以外（`price` / `macd` kind。株価と同じ円スケールの列）は**変化率（%）**で見て、**±3.0%** を閾値にする。
+  期首値が 0 近傍なら符号だけで判定してゼロ除算を避ける
+
+**実測（9984.T・実データ・`gemini-2.5-flash` の `count_tokens`。2026-09-21）**:
+
+| 期間 | 圧縮前（財務なし） | 圧縮後（**財務あり**） |
+|---|---|---|
+| 60日 | 28,420 トークン | **15,355 トークン** |
+| 120日 | 約53,000 トークン | **16,305 トークン** |
+
+20日は圧縮する区間が無いので、財務を足したぶんだけ増える（合成データで 12,214字 → 13,291字）。
+これは想定どおりで、20日を選ぶのは「直近の値だけを細かく見たいとき」だから許容する。
 
 #### 2.9.9 出力スキーマへの追加
 
@@ -1038,6 +1160,23 @@ LLM は表の中の数値同士を突き合わせた計算を苦手とする（`
 さらに、**AI が書いた根拠に出てくる数値が入力データに実在するかをアプリ側で照合**し、
 レポートに検証結果を表示する（`docs/research/llm-prompting.md` §6。根拠を先に書かせても後付けの
 合理化になり得ることが報告されているため、順序の工夫だけに頼らない）。
+
+照合は `app/ai/verify.py` の `verify_numbers(prompt_text, report)`（純関数）。
+`{"checked", "found", "missing": [{"field", "number", "text"}], "rate"}` を返す。
+
+- 対象は3つの観点の `evidence` と `assessment`、`risks` / `watch_points` / `summary` / `data_scope_note`
+- 数値はカンマを除いて正規化し、**日付（`YYYY-MM-DD`）は分解せず文字列のまま**照合する
+- **丸め違いは双方向に許す**（AI が `7.7`・プロンプトが `7.66` でも実在扱い）
+- **単位の言い換えは追わない**（`7,798,650百万円` と `7兆7,986億円` は別物）。際限がないため
+- **1〜10 の単独の整数は対象外**（「3件」のような数え上げで照合が汚れるため）
+- **照合に使うのは実際に送ったプロンプト本文**（再依頼した場合も、最後に送ったもの）
+- 検証で例外が出ても分析結果を捨てない（検証結果を `None` にしてレポートは出す）
+- **この検査の限界をレポートに必ず併記する**: プロンプトに同じ数字が**在るか**を見るだけで、
+  その数字の**使い方**が正しいかは分からない。偶然の一致もあり得る
+
+**レポートの増減表記に ▲▼ を使わない。** 日本語の財務資料では「▲1,000」が「マイナス1,000」を意味するため、
+増加の印に ▲ を付けると符号が逆に読まれる。方向は `↑ ↓ →` で示し、数値には必ず符号を付ける
+（`↑+5.5%` / `↓-0.1pt`）。総合判定のバッジ（強気/弱気）だけは数値に付かないので従来どおり。
 
 ---
 
@@ -1160,12 +1299,24 @@ CREATE TABLE financials (
     period_end  TEXT NOT NULL,   -- 会計期間の末日（YYYY-MM-DD）
     item        TEXT NOT NULL,   -- 正規化した項目名（revenue / operating_cf / roe ...）
     value       REAL,
-    unit        TEXT,            -- 円・株・比率など
+    unit        TEXT,            -- 'JPY' | 'JPY/share' | 'shares' | '%' | 'times'
     basis       TEXT NOT NULL,   -- 'consolidated' | 'nonconsolidated'
     standard    TEXT,            -- 'jgaap' | 'ifrs' | 'usgaap'
+    period_type TEXT NOT NULL DEFAULT 'FY',  -- 'FY'（通期）| 'HY'（中間期）。§2.9.4a で必ず分ける
     doc_id      TEXT NOT NULL,   -- 取り込み元の書類
     submit_at   TEXT NOT NULL,   -- その書類の提出日時（訂正の新しさの判定に使う）
     PRIMARY KEY (symbol, period_end, item, basis)
+);
+
+-- 財務数値の取り込みを試した書類（成否によらず残し、毎回取り直さない。SPEC §2.9.5）
+CREATE TABLE financial_docs (
+    symbol      TEXT NOT NULL REFERENCES stocks(symbol) ON DELETE CASCADE,
+    doc_id      TEXT NOT NULL,
+    submit_at   TEXT NOT NULL,
+    period_end  TEXT,
+    result      TEXT NOT NULL,   -- 'ok' | 'empty' | 'error:...'
+    fetched_at  TEXT NOT NULL,
+    PRIMARY KEY (symbol, doc_id)
 );
 
 -- 生成したレポート
@@ -1289,6 +1440,8 @@ app/
 │   ├── taisyaku.py        貸借取引残高（取得・パース・保存 §2.3）
 │   └── edinet.py          EDINET API v2・コードリスト・日次キャッシュ
 ├── disclosures.py       [新] 突合・分類・キャッシュ再走査
+├── financials.py        [新] 財務数値の保存・読み出し・取得ジョブ（§2.9）
+├── financial_metrics.py [新] 財務指標の算出（§2.9.6。DB に触らない純関数）
 ├── events.py            [新] disclosures → チャートイベント変換（足のある日付への寄せ）
 └── ai/                  [新]
     ├── __init__.py
@@ -1559,3 +1712,6 @@ PDF 一時取得方式への切り替えは不要になった。
 | 2026-09-21 | 1.3 | **財務数値の取り込みと指標を §2.9 として追加**（`type=5` CSV・「主要な経営指標等の推移」に限定・コンテキストIDでの連結判定・アプリ側で指標を算出・1指標1行で送る・テクニカルの圧縮・`fundamental` と `data_scope_note` の追加）。§3 に `financials`、§11 を更新 | ユーザー要望「XBRL 財務数値の DB 化はやるべき。ただし全部を AI に送るのは問題がある。指標にまとめて開示と一緒に送りたい」。サブエージェント4本の調査（`docs/research/`）と、メインによる実データ2件の確認にもとづく。**LLM は表の数値同士の計算が苦手で、長い入力ほど精度が落ちる**という報告が揃っているため、計算はアプリ側に寄せ、プロンプトはむしろ短くする |
 | 2026-09-21 | 1.3 | **レポートに図を入れ、構成を組み替えた**（§2.7.6。株価チャート・財務ハイライト・KPI カード・指標表の折りたたみ）。図はインライン SVG（`app/ai/charts.py`）で、`<script>` を出力しない。**アプリ内ビューア**（一覧＋プレビューの2ペイン、`get_report_html` と `sandbox=""` の iframe）を追加 | ユーザー要望「グラフや図や表がないのは非常に見づらい」「レポートタブから HTML を見れるようにしてほしい。フォルダに飛ぶのは UX が悪い」。`data/reports/` はどちらのサーバーからも配信されないため、URL ではなく HTML 文字列を渡す方式にした |
 | 2026-09-21 | 1.3 | **レポートの株価チャートを Lightweight Charts のローソク足に差し替えた**（§2.7.6）。レポートにライブラリを丸ごとインライン埋め込みし、アプリ内ビューアの iframe を `sandbox="allow-scripts"` に変更。データは `<script type="application/json">` 経由で渡し、**AI の出力はスクリプト文脈に入れない**。プレビューの白い枠を廃止 | ユーザー要望「SVG の株価チャートは視認性が悪い。ダッシュボードタブのトレーディングビューの UI を使ってほしい」「プレビューの白い枠線は不要」。`data/reports/` は配信されず `srcdoc` で表示するため、相対パスでのライブラリ参照はできない。同一オリジンは許可しないので、スクリプトを許してもレポートから親ページには触れない |
+| 2026-09-21 | 1.4 | **§2.9 を実データ4件で訂正**（半期報の本体 CSV は `jpcrp040300-ssr-*` で `jpcrp050000-ssr` は誤り／欠損値は全角ハイフン `－`／会計基準と期間末日は `jpdei_cor:` の DEI 行から取る／`EquityToAssetRatioIFRS…` は**自己資本比率ではなく BPS**／比率は `pure` の小数なので100倍、PER は倍率なので100倍しない／`dps`・`payout_ratio`・`shares_outstanding`・`capital_stock` は連結側に無く単体側から補う／**通期と中間期を混ぜない** `period_type` を追加）。§2.9.2a・§2.9.4a を新設し、§2.9.6 にトレンド判定規則と前期比・CAGR の出し方を明文化。§3 に `financial_docs`、§5 に `financials.py` と `financial_metrics.py` | P11-1 の実装前に、メインが EDINET の `type=5` を4件（IFRS 有報・日本基準 有報・**半期報**・**連結決算のない会社の有報**）取得して確認した。要素IDの字面と実際の中身が食い違う箇所（IFRS の自己資本比率）と、半期の6か月値を通期の系列に混ぜると成長率が壊れる点は、実物を見るまで分からなかった。§5 の #10・#11 はこれで解消 |
+| 2026-09-21 | 1.5 | **財務指標をプロンプトへ統合し、テクニカルを圧縮した**（§2.9.7・§2.9.8）。直近20日は生 CSV、それ以前は要約（期間の四本値・出来高・シグナル・指標ごとの方向）に置き換える。出力スキーマに `fundamental` と `data_scope_note` を追加し（§2.9.9）、レポートに財務ハイライト・指標表・中間期の表・参照範囲の明示を出す | P11-5・P11-6。実測（9984.T）で **60日 28,420→15,355 トークン / 120日 約53,000→16,305 トークン**。財務を足したうえで総量が減ることを確認した。レポートの財務図は、EDINET から**営業利益が取れない**ことが分かったため、営業利益・営業利益率をやめて営業CF・フリーキャッシュフローに差し替えた |
+| 2026-09-21 | 1.6 | **AI が書いた数値の実在検証を追加**（§2.9.9。`app/ai/verify.py`）。レポートの増減表記から **▲▼ を廃し `↑ ↓ →` と符号付きの数値**にした | P11-6 後半・P11-7。実データ4パターン（日本基準・IFRS・単体のみ・財務なし）を取り込み→指標→プロンプト→レポートまで通して確認した。▲▼ は実レポートを読んで気づいた誤読で、日本語の財務資料では ▲ がマイナスを意味するため、増加に ▲ を付けると符号が逆に伝わる |

@@ -16,6 +16,7 @@ from functools import wraps
 from pathlib import Path
 
 from . import disclosures
+from . import financials
 from .ai import analyze
 from .ai import quota as ai_quota_mod
 from .ai import report as ai_report
@@ -233,6 +234,18 @@ class Api:
             "truncated": result["truncated"],
             "url": url,
         }
+
+    # ---------- 財務数値（P11-3。SPEC §2.9.1）----------
+    @_response
+    def estimate_financials(self, symbol: str | None = None):
+        """財務数値の取得ジョブの事前見積り（画面の確認ダイアログ用）。
+
+        `symbol` を省略すると登録銘柄すべてが対象。API キー未設定でも例外にせず
+        `can_run: False` と `reason` を返すので、画面はそれを見て設定タブへ誘導する。
+        """
+        return financials.estimate_financials(
+            self._service.db, self._require_settings(), symbol or None
+        )
 
     # ---------- AI 分析（P6-6。SPEC §2.7・§4.2）----------
     @_response

@@ -20,6 +20,7 @@ from app.database import Database
 from app.ai.analyze import ai_analyze_job
 from app.disclosures import disclosures_job
 from app.fetcher import YahooFetcher
+from app.financials import financials_job
 from app.jobs import JobManager, selftest_job
 from app.service import StockService
 from app.settings import Settings
@@ -59,6 +60,8 @@ def main() -> None:
     jobs.register("short_all", short_all_job(db, settings))
     jobs.register("disclosures", disclosures_job(db, settings))
     jobs.register("ai_analyze", ai_analyze_job(db, settings))
+    # 財務数値（有報・半期報）。年2回しか増えないので自動更新には入れない（SPEC §2.9.1）
+    jobs.register("financials", financials_job(db, settings))
     if args.debug:
         jobs.register("selftest", selftest_job)
     api = Api(service, jobs, settings)
