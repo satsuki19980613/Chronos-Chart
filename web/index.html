@@ -313,7 +313,10 @@
           <p class="empty big" id="report-preview-placeholder">レポートを作成すると、ここに表示されます</p>
           <p class="notice" id="report-preview-error" hidden></p>
           <div class="report-frame-wrap" id="report-preview-frame-wrap" hidden>
-            <iframe class="report-frame" id="report-preview-frame" sandbox="" title="レポートのプレビュー"></iframe>
+            <!-- allow-scripts だけを許可する（同一オリジンは許可しない）。レポートに同梱した
+                 Lightweight Charts で株価チャートを描くため。allow-same-origin を一緒に付けると
+                 サンドボックスが実質無効になるので、絶対に足さないこと（SPEC §2.7.6） -->
+            <iframe class="report-frame" id="report-preview-frame" sandbox="allow-scripts" title="レポートのプレビュー"></iframe>
           </div>
         </div>
       </div>

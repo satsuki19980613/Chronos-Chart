@@ -341,15 +341,29 @@ def test_disclosure_from_db_via_prompt_source_does_not_use_kessan_label(tmp_path
 # ---------------------------------------------------------------------------
 # 単一ファイル完結（外部参照が無いこと）
 # ---------------------------------------------------------------------------
-def test_html_is_self_contained_single_file():
-    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
-    assert "<link" not in html
-    assert "src=" not in html
-    assert "<script" not in html
-    # href はページ内リンク（#...）のみ許可
-    import re
+def _strip_scripts(html: str) -> str:
+    """`<script ...>...</script>` を丸ごと取り除いた文字列を返す（本文だけを検査するため）。"""
+    return re.sub(r"<script\b[^>]*>.*?</script>", "", html, flags=re.DOTALL)
 
-    for m in re.finditer(r'href="([^"]*)"', html):
+
+def test_html_is_self_contained_single_file():
+    """本文には外部参照が無いこと。株価チャート用の同梱スクリプト3つだけは例外として許可する。
+
+    Lightweight Charts の中身には `src=` に見える文字列やライセンスの URL が含まれるため、
+    それらを含む `<script>` の中身を取り除いたうえで、残り（HTML 本文）を検査する。
+    """
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+
+    # スクリプトは同梱の3つ（JSON・ライブラリ・初期化）だけであること。
+    # `<script\b` の単純カウントは使わない。初期化スクリプトの JS コメントの説明文に
+    # 地の文として「<script>」という文字列が出てくるため、要素単位（開始〜対応する終了タグ）で数える
+    assert len(re.findall(r"<script\b[^>]*>.*?</script>", html, flags=re.DOTALL)) == 3
+
+    body = _strip_scripts(html)
+    assert "<link" not in body
+    assert "src=" not in body
+    # href はページ内リンク（#...）のみ許可
+    for m in re.finditer(r'href="([^"]*)"', body):
         assert m.group(1).startswith("#"), f"外部参照の href が見つかった: {m.group(1)}"
 
 
@@ -389,6 +403,49 @@ def test_price_chart_is_rendered():
 def test_multiple_svgs_present():
     html = report.render_report(_prompt_input(), _analysis_report(), model="m")
     assert html.count("<svg") >= 2
+
+
+def test_price_chart_container_holds_svg_fallback():
+    """`.price-chart-host`（Lightweight Charts のマウント先）に SVG フォールバックが入っていること。
+
+    JS が動かない環境（sandbox がスクリプトを許可しない等）でも、初期表示として
+    SVG 折れ線がそのまま見えるようにする（P12-5・SPEC §2.7.6）。
+    """
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    match = re.search(
+        r'<div class="price-chart-host" id="cc-price-chart">(.*?)</div>\s*<figcaption>',
+        html,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    assert "<svg" in match.group(1)
+
+
+def test_price_chart_legend_shows_sma_with_css_variable_swatch():
+    """既定の `_prompt_input()` は `sma_5` 等の列を持たないため、SMA5 を含む CSV を渡す。"""
+    data = _prompt_input(
+        price_csv=(
+            "date,open,high,low,close,volume\n"
+            "2025-01-06,100,101,99,100,1000\n"
+            "2025-01-07,100,102,98,101,1200\n"
+        ),
+        indicator_csv=(
+            "date,sma_5,sma_25,sma_75\n2025-01-06,100,,\n2025-01-07,100.5,,\n"
+        ),
+    )
+    html = report.render_report(data, _analysis_report(), model="m")
+    legend = html.split('class="chart-legend"')[1].split("</ul>")[0]
+    assert "SMA5" in legend
+    assert "var(--chart-" in legend
+
+
+def test_price_chart_legend_omits_disclosure_and_signal_when_absent():
+    """開示もシグナルも無い場合、凡例に「開示」「買いシグナル」を出さない。"""
+    data = _prompt_input(signals=(), disclosures=())
+    html = report.render_report(data, _analysis_report(), model="m")
+    legend = html.split('class="chart-legend"')[1].split("</ul>")[0]
+    assert "開示" not in legend
+    assert "買いシグナル" not in legend
 
 
 def test_price_chart_markers_exclude_dates_outside_price_csv():
@@ -449,12 +506,39 @@ def test_financials_provided_renders_kpi_cards_and_charts():
     assert "▲" in html or "▼" in html
 
 
-def test_no_script_tag_anywhere():
-    """サンドボックス iframe で表示するため <script> は一切出力しない。"""
+def test_scripts_are_only_the_bundled_chart():
+    """`<script>` は株価チャート用に同梱した3つ（JSON・ライブラリ・初期化）だけであること（P12-5）。
+
+    サンドボックス iframe は `sandbox="allow-scripts"` でスクリプトを許可するようになったが、
+    許可されるのはこの3つだけで、AI の出力（`summary` 等）がスクリプト文脈に混入してはいけない。
+    """
+    malicious_summary = "</script><script>alert(1)</script>"
     html = report.render_report(
-        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+        _prompt_input(),
+        _analysis_report(summary=malicious_summary),
+        model="m",
+        financials=_sample_financials(),
     )
-    assert "<script" not in html
+
+    # データ用の <script type="application/json"> が1つあること
+    assert '<script type="application/json" id="cc-price-chart-data">' in html
+    # 同梱ライブラリの著作権表示（ライセンス表記）を落としていないこと
+    assert "TradingView Lightweight Charts" in html
+
+    # AI の出力はスクリプト文脈に入らず、HTML 本文側にエスケープされた形で現れる
+    body = _strip_scripts(html)
+    assert "&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+    # スクリプトの中身（<script>...</script> の内側）には、AI の出力（生の文字列）が現れない
+    for m in re.finditer(r"<script\b[^>]*>(.*?)</script>", html, flags=re.DOTALL):
+        assert malicious_summary not in m.group(1)
+
+    # JSON ブロックの中身に生の "<" が含まれないこと（payload_json がエスケープ済みのはず）
+    json_match = re.search(
+        r'<script type="application/json" id="cc-price-chart-data">(.*?)</script>', html, flags=re.DOTALL
+    )
+    assert json_match is not None
+    assert "<" not in json_match.group(1)
 
 
 def test_details_used_for_collapsing_extra_indicators():
@@ -478,12 +562,16 @@ def test_print_and_dark_mode_css_present():
 
 
 def test_generated_html_size_is_reasonable():
+    """Lightweight Charts 本体（約198KB）を同梱するようになったため、上限を引き上げる（P12-5）。
+
+    それでも際限なく肥大化していないことは確認する（500KB を超えたら何かがおかしい）。
+    """
     html = report.render_report(_prompt_input(), _analysis_report(), model="m")
-    assert len(html.encode("utf-8")) < 200_000
+    assert len(html.encode("utf-8")) < 500_000
     html_fin = report.render_report(
         _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
     )
-    assert len(html_fin.encode("utf-8")) < 200_000
+    assert len(html_fin.encode("utf-8")) < 500_000
 
 
 # ---------------------------------------------------------------------------
