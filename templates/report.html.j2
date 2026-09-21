@@ -22,6 +22,10 @@
     --chart-6: #D55E00; /* vermilion */
     --chart-7: #CC79A7; /* purple */
     --chart-8: #000000; /* black */
+    /* ローソク足の陽線/陰線。--chart-N とは別に持つ（Okabe-Ito の vermilion は
+       オレンジ寄りで、同じ図に重なる SMA5 と紛れるため。app/ai/price_chart.py） */
+    --candle-up: #b3261e;
+    --candle-down: #0072B2;
   }
   * { box-sizing: border-box; }
   body {
@@ -126,6 +130,22 @@
   svg.cc-chart--sparkline { width: 84px; height: 22px; }
   svg.cc-chart--placeholder { color: var(--muted); }
 
+  /* 株価チャート（Lightweight Charts のローソク足。P12-5）。
+     JS が動かない場合は中の SVG フォールバックがそのまま表示される */
+  .price-chart-host { min-height: 240px; }
+  .chart-legend {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin: 0 0 6px;
+    padding: 0;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .chart-legend li { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; }
+
   /* 財務ハイライト: KPI カード */
   p.fin-meta { color: var(--muted); font-size: 0.88rem; margin: 0.4em 0 1em; }
   .kpi-grid {
@@ -192,6 +212,9 @@
       --chart-6: #e6864a;
       --chart-7: #dd9dc4;
       --chart-8: #f2f2f2;
+      /* ダークだけはダッシュボード（web/js/chart.js）と同じ赤上げ・青下げにする */
+      --candle-up: #ff5c6c;
+      --candle-down: #3ea6ff;
     }
     body { background: #14161b; }
     .withdrawn-tag { color: #14161b; }
@@ -215,6 +238,8 @@
       --chart-6: #D55E00;
       --chart-7: #CC79A7;
       --chart-8: #000000;
+      --candle-up: #b3261e;
+      --candle-down: #0072B2;
     }
     @page { size: A4; margin: 14mm 12mm; }
     body { max-width: none; background: #fff; color: #1a1a1a; padding: 0; }
@@ -222,6 +247,7 @@
     header.report-header, section, table.data-table, .chart-figure, .kpi-grid, .verdict-box {
       break-inside: avoid;
     }
+    .price-chart-host { break-inside: avoid; page-break-inside: avoid; }
     /* <details> は印刷では常に開いた状態で見せる（JS を使わずに CSS だけで強制する） */
     details { display: block !important; }
     details > summary { display: block !important; font-weight: bold; }
@@ -263,8 +289,23 @@
 
 <h2 id="price-chart">株価チャート</h2>
 <figure class="chart-figure">
-  {{ price_chart_svg | safe }}
-  <figcaption>終値と移動平均線（SMA5・SMA25・SMA75）。▲買い/▼売りシグナル、●開示の提出日を重ねて表示。</figcaption>
+  <ul class="chart-legend">
+    {% for item in price_chart_legend %}
+    <li>
+      {% if item.kind == "candle" %}
+      <span class="legend-swatch" style="background: var({{ item.color_var }}, {{ item.color }})"></span><span class="legend-swatch" style="background: var({{ item.color_var2 }}, {{ item.color2 }})"></span>
+      {% else %}
+      <span class="legend-swatch" style="background: var({{ item.color_var }}, {{ item.color }})"></span>
+      {% endif %}
+      {{ item.label }}
+    </li>
+    {% endfor %}
+  </ul>
+  <div class="price-chart-host" id="{{ price_chart_container_id }}">{{ price_chart_svg | safe }}</div>
+  <figcaption>
+    ローソク足と移動平均線（SMA5・SMA25・SMA75）、下段は出来高。▲▼は買い/売りシグナル
+    （ゴールデン/デッドクロスは矢印と記号、その他は小さな丸）、●は開示の提出日。
+  </figcaption>
 </figure>
 
 <h2 id="financials">財務ハイライト</h2>
@@ -439,6 +480,17 @@
     <li>開示情報は金融商品取引法に基づく EDINET の法定開示のみを対象としており、決算短信・業績修正（TDnet の適時開示）は分析対象に含まれていない。</li>
   </ul>
 </section>
+
+<!--
+  株価チャート（Lightweight Charts のローソク足。P12-5）専用のスクリプト3点。
+  AI の出力（summary 等）はここに一切入らない。渡すのは株価・指標・シグナル・開示日だけ
+  （app.ai.price_chart が JSON を組み立てる）。JSON は payload_json() が <, >, & を
+  \uXXXX にエスケープ済みなので </script> で閉じられる心配はない。
+  ライブラリ本体・初期化スクリプトはリポジトリに同梱した自前のファイル（外部取得なし）。
+-->
+<script type="application/json" id="{{ price_chart_data_id }}">{{ price_chart_json | safe }}</script>
+<script>{{ price_chart_library | safe }}</script>
+<script>{{ price_chart_init | safe }}</script>
 
 </body>
 </html>

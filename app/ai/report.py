@@ -6,11 +6,18 @@
 （P11 が渡す形。値そのものはこのモジュールが取得するわけではない）だけなので、需給が混入する経路が無い。
 `service.dashboard()` の payload（需給の表示データを含む）はここでは一切参照しない。
 
-HTML は Jinja2 の単一テンプレート（`templates/report.html.j2`）から生成する。外部 CSS/JS/画像は
+HTML は Jinja2 の単一テンプレート（`templates/report.html.j2`）から生成する。外部 CSS/画像は
 参照せず、生成された文字列だけで完結する1ファイルにする。AI の出力（`summary` 等）をそのまま
-テンプレートに埋め込むため、**autoescape は必須**（`<script>` 混入対策）。図だけは `app.ai.charts`
+テンプレートに埋め込むため、**autoescape は必須**（`<script>` 混入対策）。図の大半は `app.ai.charts`
 が自前でエスケープ済みの SVG 文字列を返すので、テンプレート側で `| safe` を使って埋め込む
 （P12-2: レポートの視覚強化）。
+
+**`<script>` を出力するのは株価チャートのためだけ**（P12-5: SVG 折れ線から Lightweight Charts の
+ローソク足への差し替え）。`app.ai.price_chart` が組み立てる JSON・ライブラリ本体・初期化スクリプトの
+3つをテンプレートの末尾に埋め込む。**AI の出力はこのスクリプト文脈には一切入らない**
+（チャートに渡すのは株価・指標・シグナル・開示日だけで、`summary` 等の AI 生成文はいつもどおり
+Jinja2 の autoescape 経由で HTML 本文にだけ出す）。詳細は `app.ai.price_chart` の docstring と
+SPEC §2.7.6 を参照。
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from .. import config
 from ..errors import UserFacingError
-from . import charts
+from . import charts, price_chart
 from .prompt import PromptInput
 from .schema import AnalysisReport
 
@@ -255,6 +262,13 @@ def _price_markers(data: PromptInput, valid_dates: set[str]) -> list[dict]:
 
 
 def _price_chart_svg(data: PromptInput) -> str:
+    """株価チャートの**フォールバック用** SVG 折れ線を組み立てる（P12-5）。
+
+    レポート本体は Lightweight Charts のローソク足（`app.ai.price_chart`）を使うが、
+    サンドボックス iframe がスクリプトを許可しない環境や初期化に失敗した場合に備え、
+    `.price-chart-host`（`price_chart_container_id`）の中身として初期表示しておき、
+    JS の初期化に成功したときだけ差し替える（SPEC §2.7.6）。
+    """
     dates, closes = _parse_price_csv(data.price_csv)
     lines = _parse_price_lines(data.indicator_csv, dates)
     valid_dates = set(dates)
@@ -514,6 +528,12 @@ def render_report(
         "confidence_label": _CONFIDENCE_LABELS.get(report.confidence, report.confidence),
         "technical_badge": _technical_badge(data.latest),
         "price_chart_svg": _price_chart_svg(data),
+        "price_chart_json": price_chart.payload_json(data),
+        "price_chart_library": price_chart.library_source(),
+        "price_chart_init": price_chart.init_script(),
+        "price_chart_legend": price_chart.legend_items(data),
+        "price_chart_container_id": price_chart.CHART_CONTAINER_ID,
+        "price_chart_data_id": price_chart.DATA_SCRIPT_ID,
         "fin": _build_financials(financials),
         "latest_categories": _group_latest_rows(latest_rows),
         "signal_rows": [_signal_row(sig) for sig in data.signals],
