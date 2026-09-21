@@ -510,3 +510,41 @@ def test_source_does_not_mention_short_selling_or_margin_identifiers():
     source = Path(ai_client.__file__).read_text(encoding="utf-8")
     for forbidden in ("short_", "margin_", "taisyaku", "karauri"):
         assert forbidden not in source
+
+
+# ---------- count_tokens のエラーも画面向けに変換する ----------
+
+
+class _RaisingCountTokens(_FakeModels):
+    def __init__(self, error):
+        super().__init__()
+        self._count_error = error
+
+    def count_tokens(self, *, model, contents):
+        raise self._count_error
+
+
+def test_count_tokens_translates_client_errors():
+    """見積りも Gemini への1リクエスト。SDK の例外をそのまま画面まで上げない。"""
+    models = _RaisingCountTokens(_quota_error(code=403, details={"error": {"message": "invalid key"}}))
+    client = _make_client(models, api_key="SECRET-KEY-VALUE")
+    with pytest.raises(UserFacingError) as excinfo:
+        client.count_tokens("プロンプト")
+    assert "SECRET-KEY-VALUE" not in str(excinfo.value)
+
+
+def test_count_tokens_translates_429_to_quota_exceeded():
+    models = _RaisingCountTokens(_quota_error(code=429))
+    client = _make_client(models)
+    with pytest.raises(QuotaExceeded):
+        client.count_tokens("プロンプト")
+
+
+def test_count_tokens_translates_connection_errors():
+    class _Boom(Exception):
+        pass
+
+    models = _RaisingCountTokens(_Boom("boom"))
+    client = _make_client(models)
+    with pytest.raises(UserFacingError, match="接続できませんでした"):
+        client.count_tokens("プロンプト")

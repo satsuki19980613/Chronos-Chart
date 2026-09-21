@@ -275,7 +275,15 @@ class GeminiClient:
 
     def count_tokens(self, prompt: str) -> int:
         """送信前の入力トークン見積り（SPEC §2.7.1）。"""
-        result = self._client.models.count_tokens(model=self._model, contents=prompt)
+        try:
+            result = self._client.models.count_tokens(model=self._model, contents=prompt)
+        except genai_errors.ClientError as err:
+            raise self._translate_client_error(err) from err
+        except genai_errors.APIError as err:
+            code = getattr(err, "code", None)
+            raise UserFacingError(f"Gemini への送信に失敗しました（HTTP {code}）") from err
+        except Exception as err:
+            raise UserFacingError(_connection_error_message(err)) from err
         # 実測では `.total_tokens`（`total_token_count` ではない。SPEC §2.7.2a）
         return int(getattr(result, "total_tokens", None) or 0)
 

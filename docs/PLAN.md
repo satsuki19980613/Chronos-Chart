@@ -85,7 +85,7 @@
 | 項目 | 内容 |
 |---|---|
 | **現在のフェーズ** | P6（AI 分析レポート） |
-| **次にやること** | **P6-1〜P6-3 は完了。次は P6-4（検証と再依頼）。** SPEC §2.7.5。`finish_reason == MAX_TOKENS` はパースせず案内、`AnalysisReport.model_validate_json` の失敗はエラー本文を添えて再依頼（最大2回）、再依頼のたびに `Quota.start_request` を通す。実行の流れは `app/ai/analyze.py`（新規）にまとめ、`client.py` は「1呼び出し＝1送信」のままにする。そのあと P6-5（レポート生成）→ P6-6（レポートタブ UI・Gemini 接続テスト・打ち切り解除）→ P7-2（通しの動作確認） |
+| **次にやること** | **P6-1〜P6-5 は完了。次は P6-6（レポートタブ UI）。** SPEC §2.7.1・§2.1.3・§4.2。`api.py` に `ai_quota` / `ai_reset_exhausted` / `ai_estimate` / `list_reports` / `open_report` と `test_connection('gemini')` を足し、`ai_analyze` ジョブを `main.py` / `dev_server.py` に登録する。画面はレポートタブ（実行前の確認ダイアログ・進捗・一覧と「開く」）と、設定タブの Gemini 接続テスト・打ち切り解除ボタン。そのあと P7-2（通しの動作確認） |
 | **リポジトリ状態** | **`main` に P9（開示のモーダルと本文表示）までマージして push 済み**（`69b14e4`）。次の作業は `main` から新しいブランチを切って始める。コミットのメールアドレスはリポジトリ設定で GitHub の noreply アドレスにしてある（個人アドレスだと GitHub が push を拒否する） |
 | **外部アクセスの消費** | 2026-09-20 に採取済み: karauri.net `/6920/` を1回、`taisyaku.jp` の `zandaka.csv` `meigara.csv` を各1回、**EDINET の利用規約ページ（閲覧）と `Edinetcode.zip` を各1回**。実物は `tests/fixtures/real/`（Git 対象外）。**以後これらへはアクセスしない**。2026-09-20 に API キー取得後、**EDINET API v2 の `documents.json` を31回**（疎通確認1 + 実測30日分）。これは API の正規の使い方なので回数制限は無いが、1秒間隔は守ること。karauri の User-Agent の連絡先はユーザー指定でリポジトリ URL `https://github.com/satsuki19980613/Chronos-Chart` 。2026-09-20 に P8 の検証で、**EDINET コードリストを1回**（アプリの正規の取得経路）、**`documents.json` を366日分**（API の正規の使い方・1秒間隔）、**karauri.net の `/9984/` を1回**（10秒間隔・UA に連絡先）取得した。ユーザーの `data/` の `scrape_contact` にリポジトリ URL を設定済み（`auto_update_short` はオフのまま）。2026-09-21 に P9 の検証で**書類取得 API（`documents/<docID>?type=1`）を7回**（構造確認2・実測1・画面確認4。いずれも API の正規の使い方・1秒間隔）。2026-09-21 に P6-1 で **Gemini API を12回**（`models.list` 1・`count_tokens` 5・`generate_content` 6。構造の採取、`ping()` の疎通、実データ60日分のプロンプトのトークン見積り。ユーザーの無料枠を使うので最小限に留め、**429 は故意に起こしていない**） |
 | **動作確認** | 2026-09-21、P9 完了時点で `.venv\Scripts\python.exe -m pytest` は **704 passed / 15 skipped**。**実データのコピーを開発サーバーで開き、実 API で開示モーダルを確認**: イベント欄の「開く」で 臨時報告書（1,799字）・確認書（390字）・変更報告書＝大量保有（3,841字）の本文が表示され、有価証券報告書は20万字で打ち切られて注記が出ること、チャートの「開示3件」マーカーのクリックでその日の3件が並び（自動読み込みはせず各件のボタンで読む）、出典と加工主体の注記が出ること。**実データで2つの不具合を見つけて直した**（本文の先頭に `<title>` のファイル名が混ざる／確認書の ZIP は `PublicDoc/` で `XBRL/` が付かず「テキストにできません」になる）。以前の記録: 2026-09-20、P8 の修正後に `.venv\Scripts\python.exe -m pytest` は **671 passed / 15 skipped**。**ユーザーの実データ（`data/`。事前にバックアップ）に対して実 API で通しの確認を行った**: コードリストを取得して `edinet_codes` が **11,386 行**（`99840` → `E02778` ソフトバンクグループ）、開示ジョブが **366日分を取得（書類あり 242日）・エラー0**、`disclosures` に **26件**（有報・半期報 2／**需給関連 5**／その他 19）が 9984.T に紐づいた。**修正前は 0 件で、とくに大量保有報告書（`issuerEdinetCode` 突合）は構造上1件も入らなかった。** 実データのコピーを開発サーバーで開き、チャートの開示マーカー（臨報・大量保有・開示2件/3件のまとめ）とイベント欄（26件・提出事由の表示）を目視確認。karauri も**実サイトへ1リクエストだけ**行い、9984.T で 20 行を取得・`short_totals` まで算出できることを確認した（このとき備考 `ポジション解消` を観測 → P8-5）。空売りの導線（連絡先未設定の理由表示・設定後にボタンが有効になること）と、登録直後の開示取得ダイアログ（367日分・約6分・範囲 2025-09-18〜2026-09-20）も開発サーバーで確認。以前の記録: P5 完了時点で `.venv\Scripts\python.exe -m pytest` は **660 passed / 15 skipped**。**合成データを入れた開発サーバーでイベント欄を確認**（右カラムに「開示イベント」パネル、「表示範囲 9件 ／ 全 10件」、TDnet 対象外と EDINET 出典・加工主体の2行、提出日時＋種別バッジ＋概要＋提出事由＋`issuer` の提出者名、取下げ行が薄くバッジ付き、未来日の行に「株価の足がまだありません」、期間より前の1件は表示範囲外で出ない）。**表示範囲との連動**（「3ヶ月」で 5件に絞られる）、**マーカークリック**（臨報のマーカーを実際にクリックすると 2026-08-17 の行が強調される）、**行クリックでのスクロール**（2026-07-20 の行をクリックするとチャートが移動し、一覧が 2026-06-15 を含む並びに入れ替わる）を確認。`dashboard` を開いても `get_disclosures` が呼ばれなくなった（重複呼び出しの解消）ことを通信ログで確認。以前の記録: P5-3 完了時点で `.venv\Scripts\python.exe -m pytest` は **658 passed / 15 skipped**。**合成データを入れた開発サーバーで開示マーカーを目視確認**（同日3件が「開示3件」にまとまる／土曜提出が翌月曜の足に寄る／取下げ・未来日・期間より前の開示はマーカーが出ない／`supply` は橙の上向き矢印 belowBar・`report` は水色の丸・`other` は灰の四角／シグナルのチップを OFF にしても開示マーカーが残り、その逆も成り立つ）。チップ設定の移行も確認（`{overlays:['signals']}` の古い保存値から読み込むと、開示だけが ON で足され、ユーザーが OFF にした移動平均は OFF のまま）。種データは `scratchpad/seed.py`、`.claude/launch.json` の `CHRONOS_DATA_DIR` は本セッションのスクラッチ領域に付け替えた（`auto_update_on_start=0` も種データに入れてある）。以前の記録: P4 完了時点で `.venv\Scripts\python.exe -m pytest` は **602 passed / 15 skipped**（skip は実通信テストのみ）。**開発サーバーで実 API を使って画面を確認済み**（開示を取得→トースト「開示 3日分を取得（うち書類あり 1日）・開示 3件を登録」、ダッシュボードの件数「開示 3件（有報・半期報 1／需給関連 0／その他 2）」、開示ゼロの銘柄で「この銘柄の開示はまだありません（EDINET は 3 日分取得済み）」、設定タブの接続テスト「EDINET に接続できました（2026-09-18 の書類 402 件）」、2回目の「開示を取得」が確定済みを除いて当日1日分だけになること）。**起動時の自動更新も実 API で確認**し、トーストが SPEC §2.8.2 の例どおりの並び「株価 取得済み／日証金 取得済み／EDINET 3日分・3件登録／空売り スキップ（設定オフ）」になることを確認。**EDINET API の疎通をユーザーの実キーで確認済み**（資格情報ストアから読めること、`documents.json` が 200 を返すこと）。実データ30日分5,123件でパーサを検証し、`issuerEdinetCode` が 350/360 のみ・`subjectEdinetCode` が 240〜320 のみに入ることを確認。P4-2 は外部アクセス無しで、ジョブ登録（`start_job('disclosures')` がキー未設定で `UserFacingError` を返し、キャッシュフォルダを作らないこと）と `CHRONOS_DATA_DIR` 配下に `edinet_cache/` が解決されることを一時フォルダで確認。開発サーバーで需給の取得UI（連絡先未設定で一括取得が無効／設定後に有効／再取得抑止が効いて「取得が必要な銘柄はありません」／ダッシュボードの2ボタンと注記）を、**外部アクセス無し・一時データフォルダ**で確認。`auto_update_on_start` をオフにした起動で、JS からのジョブ開始が即座に skipped で終わり外部通信が発生しないことも確認。P1 完了時点では pywebview のウィンドウ（`start.bat`）での起動をユーザーが確認済み（「全て問題ない」） |
@@ -100,7 +100,7 @@
 | P3 | 需給のチャート表示 | DONE |
 | P4 | 開示の取得・突合・分類 | DONE |
 | P5 | イベントマーカーとイベント欄 | DONE |
-| P6 | AI分析レポート | WIP（P6-1〜P6-3 完了） |
+| P6 | AI分析レポート | WIP（P6-1〜P6-5 完了） |
 | P7 | 仕上げ | WIP（P7-1 完了） |
 | P8 | 実機テストで見つかった不備の修正 | DONE |
 | P9 | 開示のモーダルと本文表示（ユーザー要望） | DONE |
@@ -186,8 +186,8 @@
 | P6-1 | `DONE` | Gemini クライアント | `google-genai` ラッパ。`count_tokens`。**SDK の `retry_options` を設定しない**。実物を1回採取して `usage_metadata` のフィールド名・429 エラー詳細（`QuotaFailure.quotaId` / `RetryInfo`）・thinking 予算の指定方法を確認し **SPEC §9-4 を解消** | P1-4 | `ai/client.py` |
 | P6-2 | `DONE` | クォータ管理 | SPEC §2.7.2。太平洋時間の日付境界と夏時間、**送信前に加算**、再依頼ごとのガード、429 の3分岐、打ち切りフラグと手動解除。`test_ai_quota.py` | P6-1 P1-3 | `ai/quota.py` `database.py` |
 | P6-3 | `DONE` | スキーマとプロンプト | SPEC §2.7.3〜2.7.4。**根拠 → 結論の順**、リスト上限。読み取りファサードと `PromptInput`。**番兵値テスト**と `app/ai/` の識別子検査。`test_ai_prompt.py` | P6-1 P4-3 | `ai/schema.py` `ai/prompt.py` |
-| P6-4 | `TODO` | 検証と再依頼 | SPEC §2.7.5。`MAX_TOKENS` 検知と案内文、エラー本文を添えた再依頼、上限2回。`test_ai_schema.py` | P6-3 P6-2 | `ai/client.py` |
-| P6-5 | `TODO` | レポート生成 | SPEC §2.7.6。Jinja2 で単一HTML、表示順は結論が先、免責（TDnet 対象外を含む）、需給を含めない（番兵値）。`ai_reports`。`test_report.py` | P6-4 | `ai/report.py` `templates/` |
+| P6-4 | `DONE` | 検証と再依頼 | SPEC §2.7.5。`MAX_TOKENS` 検知と案内文、エラー本文を添えた再依頼、上限2回。`test_ai_schema.py`。**実行の流れは `ai/analyze.py` に分離**（`client.py` は1呼び出し＝1送信のまま） | P6-3 P6-2 | `ai/analyze.py` |
+| P6-5 | `DONE` | レポート生成 | SPEC §2.7.6。Jinja2 で単一HTML、表示順は結論が先、免責（TDnet 対象外を含む）、需給を含めない（番兵値）。`ai_reports`。`test_report.py` | P6-4 | `ai/report.py` `templates/` |
 | P6-6 | `TODO` | レポートタブUI | `ai_analyze` ジョブ、実行前の確認ダイアログ（見積り・残量・送信データ種別）、進捗、レポート一覧と「開く」、設定タブの Gemini 接続テストと打ち切り解除ボタン | P6-5 P1-6 P1-8 | `api.py` `app.js` `index.html` |
 
 ### P7 — 仕上げ
@@ -419,7 +419,9 @@
   **需給テーブルを読む経路が無い**ことがこのモジュールの担保。`days` は 20/60/120 のみ。
   実測（9984.T・実データ）で 20日=約1.2万字 / 60日=約3万字（**入力 28,420 トークン**）/ 120日=約5.7万字
 - `app/ai/schema.py` — `AnalysisReport`。**フィールドの定義順が出力順**なので「根拠 → 結論」を崩さない
-- 番兵値テストは `tests/test_ai_prompt.py`。`app/ai/` 配下のソースに `short_` `margin_` `taisyaku` `karauri` が
+- `app/ai/analyze.py` — `estimate(db, settings, symbol, days)`（確認ダイアログ用。**例外にせず `can_run` / `reason` で返す**）と `run_analysis(db, settings, symbol, days, *, progress, cancel, sleep)`。`MAX_TOKENS` はパースせず中止、スキーマ不一致はエラー本文を添えて最大2回再依頼、429（分次）は各周回につき1回だけ `retry_delay` 待って再送。3回失敗したら生レスポンスを `data/logs/` に保存する（プロンプトは保存しない）
+- `app/ai/report.py` — `render_report(data, report, model=...)` → `save_report(db, config.REPORTS_DIR, ...)` → `list_reports(db)` / `get_report(db, id)`。テンプレートは `templates/report.html.j2`（Jinja2・`autoescape=True`・単一 HTML）
+- 番兵値テストは `tests/test_ai_prompt.py` と `tests/test_report.py`。`app/ai/` 配下のソースに `short_` `margin_` `taisyaku` `karauri` が
   出てこないことも機械的に検査している（新しく `app/ai/*.py` を足すときはこの検査に通ること）
 
 ### 開発サーバーで画面を確認するとき

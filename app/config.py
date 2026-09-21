@@ -15,6 +15,8 @@ CSV_DIR = DATA_DIR / "csv"
 LOG_DIR = DATA_DIR / "logs"
 # EDINET の書類一覧（documents.json）の日次キャッシュ。銘柄で絞る前のものを置く（SPEC §2.4.2）
 EDINET_CACHE_DIR = DATA_DIR / "edinet_cache"
+# AI 分析レポート（単一 HTML）の保存先（SPEC §2.7.6）
+REPORTS_DIR = DATA_DIR / "reports"
 
 # 出力タブ（AI 向けファイル）の保存先。環境変数 CHRONOS_OUTPUT_DIR で変更できる
 OUTPUT_DIR = Path(os.environ.get("CHRONOS_OUTPUT_DIR", BASE_DIR / "output"))
