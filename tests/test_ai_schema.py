@@ -381,7 +381,14 @@ def test_estimate_can_run_true(tmp_path):
     assert result["symbol"] == SYMBOL
     assert result["days"] == 20
     assert result["model"] == fake.model
-    assert result["sends"] == ["銘柄情報", "株価とテクニカル指標", "EDINET の開示（本文は含まない）"]
+    # 確認ダイアログの「送信されるデータ」。プロンプトに載せるものを増やしたらここも増える
+    # （この一覧がユーザーの同意の範囲。SPEC §2.7.1）
+    assert result["sends"] == [
+        "銘柄情報",
+        "株価とテクニカル指標（直近20日は日々の値、それ以前は要約）",
+        "財務指標（有価証券報告書・半期報告書から算出した値。生の財務諸表は送りません）",
+        "EDINET の開示（本文は含まない）",
+    ]
     assert "limits" in result["quota"]
     assert "remaining" in result["quota"]
 
