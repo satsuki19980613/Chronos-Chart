@@ -230,14 +230,21 @@ def test_unknown_connection_target_is_an_error(env):
 # ---------------------------------------------------------------------------
 # ai_analyze ジョブ
 # ---------------------------------------------------------------------------
+# SPEC §2.9.9 は `data_scope_note` に「会社予想との比較は対象外」「同業他社との比較は対象外」
+# 「需給データは分析に含まない」の3点を必ず含めさせる。つまり**完成したレポートには「需給」の語が
+# 必ず載る**（載らないのは需給の「値」）。下の検査はこの1文を除いてから語の検査をする。
+_SCOPE_NOTE = "会社予想との比較は対象外。同業他社との比較は対象外。需給データは分析に含まない。"
+
 _VALID_JSON = AnalysisReport(
     technical=SectionAnalysis(evidence=["25日線の上"], assessment="強い"),
+    fundamental=SectionAnalysis(evidence=["財務数値は未取得"], assessment="未取得"),
     disclosure=SectionAnalysis(evidence=["臨時報告書1件"], assessment="平常"),
     risks=["r"],
     watch_points=["w"],
     verdict="bullish",
     confidence="medium",
     summary="まとめ",
+    data_scope_note=_SCOPE_NOTE,
 ).model_dump_json()
 
 
@@ -313,5 +320,13 @@ def test_report_of_a_real_shaped_prompt_input_has_no_supply_demand_words(env):
         generated_at="2026-01-05 10:00:00",
     )
     html = report.render_report(data, AnalysisReport.model_validate_json(_VALID_JSON), model="gemini-test")
+
+    # 参照範囲の明示（`data_scope_note`）だけは「需給データは分析に含まない」と書くことを
+    # SPEC §2.9.9 が要求しているので、その1文を取り除いてから語の検査をする。
+    # 守りたいのは需給の「値」がレポートに出ないことで、免責の文言まで禁じると仕様と矛盾する
+    assert _SCOPE_NOTE in html, "参照範囲の明示がレポートに出ていない"
+    for required in ("会社予想", "同業他社", "需給"):
+        assert required in _SCOPE_NOTE
+    body = html.replace(_SCOPE_NOTE, "")
     for word in ("空売り", "貸借", "信用残", "需給"):
-        assert word not in html
+        assert word not in body

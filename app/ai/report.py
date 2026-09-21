@@ -87,9 +87,16 @@ _PRICE_LINE_LABELS = {"sma_5": "SMA5", "sma_25": "SMA25", "sma_75": "SMA75"}
 # SMA25 と SMA75 は両方とも「青系」だと重なったときに見分けがつかないため、SMA75 は紫にする
 _PRICE_LINE_COLORS = {"sma_5": "orange", "sma_25": "skyblue", "sma_75": "purple"}
 
-# 財務ハイライト（`financials`。P11 が渡す想定の形。§SPEC 参照）
+# 財務ハイライト（`financials` = `app.financial_metrics.compute_metrics()` の戻り値そのもの。SPEC §2.9.6・§2.9.9）
 _STANDARD_LABELS = {"jgaap": "日本基準", "ifrs": "IFRS", "usgaap": "米国基準"}
 _BASIS_LABELS = {"consolidated": "連結", "nonconsolidated": "単体"}
+# KPI カードに出す指標（financial_metrics.METRIC_ORDER のキー）。営業利益は EDINET の
+# 「主要な経営指標等の推移」に項目が無く取得できないため、売上高・当期純利益・ROE・自己資本比率にする
+_FIN_KPI_KEYS = [("revenue", "売上高"), ("net_income", "当期純利益"), ("roe", "ROE"), ("equity_ratio", "自己資本比率")]
+_FIN_KPI_MISSING_NOTE_DEFAULT = "値を取得できていません（データ不足）"
+_FIN_SOURCE_LABELS = {"disclosed": "開示値そのまま", "computed": "アプリで計算"}
+_JPY_UNIT_DIVISOR = 1_000_000.0
+_JPY_UNIT_LABEL = "百万円"
 
 
 def _role_label(role: str) -> str:
@@ -289,23 +296,6 @@ def _price_chart_svg(data: PromptInput) -> str:
 # ---------------------------------------------------------------------------
 # 財務ハイライト（`financials`。P11 が実装するまでの受け皿。SPEC §2.9 / P12-2 の申し送り）
 # ---------------------------------------------------------------------------
-def _fin_series(financials: dict, key: str, n: int) -> list:
-    values = financials.get(key)
-    if not values:
-        return [None] * n
-    values = list(values)
-    if len(values) < n:
-        values = values + [None] * (n - len(values))
-    return values[:n]
-
-
-def _fin_amount_display(value: float | None, divisor: float, unit: str) -> str:
-    if value is None:
-        return "—"
-    digits = 1 if unit and unit != "円" else 0
-    return charts.format_number(value / divisor, digits=digits) + unit
-
-
 def _is_missing_value(value: Any) -> bool:
     """`None` または NaN なら真。`app.ai.charts._is_missing` は非公開なのでここに複製する。"""
     if value is None:
@@ -314,60 +304,6 @@ def _is_missing_value(value: Any) -> bool:
         return math.isnan(float(value))
     except (TypeError, ValueError):
         return False
-
-
-def _delta_point(current: Any, previous: Any) -> dict:
-    """比率指標（ROE・自己資本比率・営業利益率）の増減は「率の変化率」ではなく「ポイント差」で示す。
-
-    `charts.delta_mark()` は比率もそのまま「相対変化率」として扱うため、0.150→0.343 のような
-    比率の増減が「▲128.7%」という誤読を招く表示になってしまう（P12-2 フィードバック）。
-    `charts.delta_mark` 自体は変更禁止なので、比率専用の表示をここで組み立てる。戻り値の形
-    （`text`/`direction`/`class`）は `charts.delta_mark` と揃え、▲▼→ の記号は踏襲する。
-    """
-    if _is_missing_value(current) or _is_missing_value(previous):
-        return {"text": "—", "direction": "na", "class": "is-na"}
-    pt = (float(current) - float(previous)) * 100  # 比率(0.xx)の差をポイント(pt)に変換
-    if abs(pt) < 0.05:
-        return {"text": f"→{pt:+.1f}pt", "direction": "flat", "class": "is-flat"}
-    if pt > 0:
-        return {"text": f"▲{pt:.1f}pt", "direction": "up", "class": "is-up"}
-    return {"text": f"▼{abs(pt):.1f}pt", "direction": "down", "class": "is-down"}
-
-
-# 値が取得できない KPI カードに添える理由（P12-2 フィードバック: なぜ空欄か分かるようにする）
-_FIN_KPI_MISSING_NOTES = {
-    "営業利益": "この会計基準では区分表示されていないため取得できません",
-}
-_FIN_KPI_MISSING_NOTE_DEFAULT = "値を取得できていません（データ不足）"
-
-
-def _fin_kpi(label: str, values: list, *, kind: str) -> dict:
-    values = list(values or [])
-    current = values[-1] if values else None
-    previous = values[-2] if len(values) >= 2 else None
-    if kind == "amount":
-        divisor, unit = charts.scale_unit(values)
-        value_display = _fin_amount_display(current, divisor, unit)
-        delta = charts.delta_mark(current, previous)
-    elif kind == "percent":
-        value_display = charts.format_percent(current)
-        delta = _delta_point(current, previous)
-    elif kind == "eps":
-        value_display = "—" if current is None else charts.format_number(current, digits=2) + "円"
-        delta = charts.delta_mark(current, previous)
-    else:  # pragma: no cover - 将来の拡張向けの保険
-        value_display = charts.format_number(current)
-        delta = charts.delta_mark(current, previous)
-    note = ""
-    if _is_missing_value(current):
-        note = _FIN_KPI_MISSING_NOTES.get(label, _FIN_KPI_MISSING_NOTE_DEFAULT)
-    return {
-        "label": label,
-        "value_display": value_display,
-        "delta": delta,
-        "spark_svg": charts.sparkline(values, aria=f"{label}の推移"),
-        "note": note,
-    }
 
 
 def _non_empty_series(series: list[dict]) -> list[dict]:
@@ -380,113 +316,268 @@ def _non_empty_series(series: list[dict]) -> list[dict]:
     return [s for s in series if any(not _is_missing_value(v) for v in (s.get("values") or []))]
 
 
-def _fin_scaled_series(*value_lists: list) -> tuple[float, str, list[list]]:
-    combined: list = [v for values in value_lists for v in values]
-    divisor, unit = charts.scale_unit(combined)
-    scaled = [[None if v is None else v / divisor for v in values] for values in value_lists]
-    return divisor, unit, scaled
+def _metric_value_display(item: dict) -> str:
+    """指標1件（`metrics` の要素、または `interim.items` の要素）の値を表示用文字列にする。
+
+    金額（`JPY`）は**百万円単位の3桁区切り**にする（円のままだと桁が読めないため。
+    依頼元の指示）。単位ごとに付ける記号は SPEC §2.9.6 の単位一覧（'JPY'|'JPY/share'|'shares'|
+    '%'|'times'|'persons'）に対応させる。
+    """
+    value = item.get("value")
+    if _is_missing_value(value):
+        return "—"
+    unit = item.get("unit")
+    value = float(value)
+    if unit == "JPY":
+        return charts.format_number(value / _JPY_UNIT_DIVISOR, digits=0) + _JPY_UNIT_LABEL
+    if unit == "JPY/share":
+        return charts.format_number(value, digits=2) + "円"
+    if unit == "%":
+        return charts.format_number(value, digits=1) + "%"
+    if unit == "times":
+        return charts.format_number(value, digits=2) + "倍"
+    if unit == "shares":
+        return charts.format_number(value, digits=0) + "株"
+    if unit == "persons":
+        return charts.format_number(value, digits=0) + "人"
+    return charts.format_number(value)  # pragma: no cover - 未知の単位向けの保険
 
 
-def _fin_performance_svg(periods: list[str], revenue: list, operating_income: list, net_income: list, operating_margin: list) -> str:
-    _, unit, (rev_s, op_s, net_s) = _fin_scaled_series(revenue, operating_income, net_income)
-    suffix = f"（{unit}）" if unit else ""
+def _change_display(change: float | None, kind: str | None) -> dict:
+    """前期比（`change_pct`/`change_kind`）を、記号（▲▼→）付きの表示にする。
+
+    `change_kind` が `'pt'`（ROE・自己資本比率・各成長率など `%` 単位の指標）なら「pt」、
+    `'pct'`（金額・1株当たり・PER）なら「%」を付ける（SPEC §2.9.6・依頼元の指示3番）。
+    `financial_metrics` 側で符号反転・ゼロ除算のケースは既に `None` に落としてあるので、
+    ここでは表示の記号付けだけを行う。
+    """
+    if _is_missing_value(change):
+        return {"text": "—", "class": "is-na"}
+    change = float(change)
+    suffix = "pt" if kind == "pt" else "%"
+    if change > 0.05:
+        return {"text": f"▲{change:.1f}{suffix}", "class": "is-up"}
+    if change < -0.05:
+        return {"text": f"▼{abs(change):.1f}{suffix}", "class": "is-down"}
+    return {"text": f"→{change:+.1f}{suffix}", "class": "is-flat"}
+
+
+_TREND_DISPLAY = {
+    "改善": {"text": "▲ 改善", "class": "is-up"},
+    "悪化": {"text": "▼ 悪化", "class": "is-down"},
+    "横ばい": {"text": "→ 横ばい", "class": "is-flat"},
+}
+_TREND_DISPLAY_NONE = {"text": "—", "class": "is-na"}
+
+
+def _trend_display(trend: str | None) -> dict:
+    return _TREND_DISPLAY.get(trend, _TREND_DISPLAY_NONE)
+
+
+def _cagr_display(cagr_pct: float | None) -> str:
+    if _is_missing_value(cagr_pct):
+        return "—"
+    return f"{float(cagr_pct):+.1f}%"
+
+
+def _percentile_display(percentile: float | None) -> str:
+    if _is_missing_value(percentile):
+        return "—"
+    return charts.format_number(percentile, digits=0) + "%"
+
+
+def _period_labels(financials: dict, n: int) -> list[str]:
+    """図の横軸ラベル。**期末日を逆算せず**、両端（最古・最新）だけに実際の日付を置く。
+
+    `financials` には期末日の一覧が無く、`period_count` と両端の日付から中間の期末日を
+    作ろうとすると実際の開示スケジュール（決算期変更・訂正報告書の期ずれ等）とずれる
+    おそれがある。依頼元の指示により、中間は空欄の相対表記にする。
+    """
+    if n <= 0:
+        return []
+    labels = [""] * n
+    earliest = financials.get("earliest_period_end")
+    latest = financials.get("latest_period_end")
+    if earliest:
+        labels[0] = str(earliest)
+    if latest:
+        labels[-1] = str(latest)
+    return labels
+
+
+def _fin_kpi(metric: dict | None, label: str) -> dict:
+    """KPI カード1件（値・前期比・トレンド・5期スパークライン）。"""
+    if metric is None:
+        return {
+            "label": label,
+            "value_display": "—",
+            "delta": {"text": "—", "class": "is-na"},
+            "trend_display": _TREND_DISPLAY_NONE,
+            "spark_svg": "",
+            "note": _FIN_KPI_MISSING_NOTE_DEFAULT,
+        }
+    value_display = _metric_value_display(metric)
+    note = "" if not _is_missing_value(metric.get("value")) else _FIN_KPI_MISSING_NOTE_DEFAULT
+    return {
+        "label": label,
+        "value_display": value_display,
+        "delta": _change_display(metric.get("change_pct"), metric.get("change_kind")),
+        "trend_display": _trend_display(metric.get("trend")),
+        "spark_svg": charts.sparkline(metric.get("history") or [], aria=f"{label}の推移"),
+        "note": note,
+    }
+
+
+def _metric_row(metric: dict) -> dict:
+    """財務指標の表の1行。"""
+    return {
+        "label": metric["label"],
+        "value_display": _metric_value_display(metric),
+        "change_display": _change_display(metric.get("change_pct"), metric.get("change_kind")),
+        "trend_display": _trend_display(metric.get("trend")),
+        "cagr_display": _cagr_display(metric.get("cagr_pct")),
+        "percentile_display": _percentile_display(metric.get("percentile")),
+        "source_label": _FIN_SOURCE_LABELS.get(metric.get("source"), metric.get("source") or "—"),
+    }
+
+
+def _metric_is_all_missing(metric: dict) -> bool:
+    """値も履歴も全部 `None` の指標なら真（表の行ごと省く。依頼元の指示4番）。"""
+    if not _is_missing_value(metric.get("value")):
+        return False
+    return all(_is_missing_value(v) for v in (metric.get("history") or []))
+
+
+def _series_in_millions(metric: dict | None) -> list:
+    if metric is None:
+        return []
+    return [None if v is None else float(v) / _JPY_UNIT_DIVISOR for v in (metric.get("history") or [])]
+
+
+def _fin_performance_svg(labels: list[str], revenue: dict | None, net_income: dict | None) -> str | None:
+    """業績5期推移（売上高・当期純利益。営業利益は EDINET から取得できないため出さない）。"""
     bars = _non_empty_series(
         [
-            {"label": f"売上高{suffix}", "values": rev_s, "color": "blue"},
-            {"label": f"営業利益{suffix}", "values": op_s, "color": "orange"},
-            {"label": f"純利益{suffix}", "values": net_s, "color": "green"},
+            {"label": f"売上高（{_JPY_UNIT_LABEL}）", "values": _series_in_millions(revenue), "color": "blue"},
+            {"label": f"当期純利益（{_JPY_UNIT_LABEL}）", "values": _series_in_millions(net_income), "color": "green"},
         ]
     )
-    line = {
-        "label": "営業利益率",
-        "values": [None if v is None else v * 100 for v in operating_margin],
-        "color": "vermilion",
-        "unit": "%",
-    }
-    return charts.bars_with_line(periods, bars, line, aria="業績5期推移（売上高・営業利益・純利益・営業利益率）")
+    if not bars:
+        return None
+    return charts.bars_with_line(labels, bars, None, aria="業績5期推移（売上高・当期純利益）")
 
 
-def _fin_cf_svg(periods: list[str], cf: dict) -> str:
-    n = len(periods)
-    operating = _fin_series(cf, "operating", n)
-    investing = _fin_series(cf, "investing", n)
-    financing = _fin_series(cf, "financing", n)
-    _, unit, (op_s, inv_s, fin_s) = _fin_scaled_series(operating, investing, financing)
-    suffix = f"（{unit}）" if unit else ""
+def _fin_cf_svg(labels: list[str], operating_cf: dict | None, free_cash_flow: dict | None) -> str | None:
+    """キャッシュフロー5期推移（営業キャッシュフロー・フリーキャッシュフロー）。
+
+    営業利益と同じ理由で投資CF・財務CFの単独項目は「主要な経営指標等の推移」に無いため、
+    取得できる営業CF・FCF（= 営業CF＋投資CF）だけを出す。
+    """
     series = _non_empty_series(
         [
-            {"label": f"営業CF{suffix}", "values": op_s, "color": "blue"},
-            {"label": f"投資CF{suffix}", "values": inv_s, "color": "vermilion"},
-            {"label": f"財務CF{suffix}", "values": fin_s, "color": "green"},
+            {"label": f"営業CF（{_JPY_UNIT_LABEL}）", "values": _series_in_millions(operating_cf), "color": "blue"},
+            {
+                "label": f"フリーキャッシュフロー（{_JPY_UNIT_LABEL}）",
+                "values": _series_in_millions(free_cash_flow),
+                "color": "vermilion",
+            },
         ]
     )
-    return charts.grouped_bars(periods, series, aria="キャッシュフロー5期推移（営業・投資・財務）")
+    if not series:
+        return None
+    return charts.grouped_bars(labels, series, aria="キャッシュフロー5期推移（営業CF・フリーキャッシュフロー）")
 
 
-def _fin_ratio_svg(periods: list[str], equity_ratio: list, roe: list) -> str:
+def _fin_ratio_svg(labels: list[str], equity_ratio: dict | None, roe: dict | None) -> str | None:
+    """自己資本比率・ROEの推移。値は `financial_metrics` が既に % の数値（例: 12.5）で返す。"""
     series = _non_empty_series(
         [
-            {"label": "自己資本比率", "values": [None if v is None else v * 100 for v in equity_ratio], "color": "skyblue"},
-            {"label": "ROE", "values": [None if v is None else v * 100 for v in roe], "color": "purple"},
+            {"label": "自己資本比率", "values": (equity_ratio or {}).get("history") or [], "color": "skyblue"},
+            {"label": "ROE", "values": (roe or {}).get("history") or [], "color": "purple"},
         ]
     )
-    return charts.line_chart(periods, series, unit="%", aria="自己資本比率・ROEの推移")
+    if not series:
+        return None
+    return charts.line_chart(labels, series, unit="%", aria="自己資本比率・ROEの推移")
 
 
-def _fin_per_svg(per: dict) -> str:
-    return charts.bullet(
-        per.get("low"), per.get("high"), per.get("current"), label="PER（倍）", aria="PERの過去レンジと現在値"
-    )
+def _fin_per_svg(per: dict | None) -> str | None:
+    """PER の過去レンジ（取得できた期間の最小〜最大）と現在値。履歴が無ければ図を出さない。"""
+    if per is None:
+        return None
+    valid = [v for v in (per.get("history") or []) if v is not None]
+    if not valid:
+        return None
+    current = per.get("value")
+    if current is None:
+        current = valid[-1]
+    return charts.bullet(min(valid), max(valid), current, label="PER（倍）", aria="PERの過去レンジと現在値")
 
 
 def _build_financials(financials: dict | None) -> dict:
-    """`financials`（P11 が渡す想定の形。省略可）から財務ハイライトの表示材料を作る。
+    """`app.financial_metrics.compute_metrics()` の戻り値から財務ハイライトの表示材料を作る。
 
-    `financials` が無い・空のときはプレースホルダ用の情報だけを返す（セクション自体は消さない）。
+    `financials` が無い・`available: False` のときは「財務数値は未取得です」の1行だけを
+    出す材料を返す（SPEC §2.9.7: 空欄を並べず、セクションごと省く）。
     """
     financials = financials or {}
-    periods = list(financials.get("periods") or [])
-    if not periods:
-        return {
-            "available": False,
-            "placeholder_svg": charts.placeholder(
-                "財務数値はまだ取得していません（有価証券報告書からの取り込み機能の追加後、"
-                "ここに業績・キャッシュフロー・自己資本比率などの推移が表示されます）",
-                width=680,
-                height=140,
-            ),
+    if not financials.get("available"):
+        return {"available": False}
+
+    metrics = list(financials.get("metrics") or [])
+    by_key = {m["key"]: m for m in metrics}
+    n = financials.get("period_count") or 0
+    labels = _period_labels(financials, n)
+
+    kpis = [_fin_kpi(by_key.get(key), label) for key, label in _FIN_KPI_KEYS]
+
+    figures = []
+    if n:
+        perf = _fin_performance_svg(labels, by_key.get("revenue"), by_key.get("net_income"))
+        if perf is not None:
+            figures.append({"title": "業績5期推移", "svg": perf})
+        cf = _fin_cf_svg(labels, by_key.get("operating_cf"), by_key.get("free_cash_flow"))
+        if cf is not None:
+            figures.append({"title": "キャッシュフロー5期推移", "svg": cf})
+        ratio = _fin_ratio_svg(labels, by_key.get("equity_ratio"), by_key.get("roe"))
+        if ratio is not None:
+            figures.append({"title": "自己資本比率・ROEの推移", "svg": ratio})
+    per_fig = _fin_per_svg(by_key.get("per"))
+    if per_fig is not None:
+        figures.append({"title": "PERの過去レンジと現在値", "svg": per_fig})
+
+    metric_rows = [_metric_row(m) for m in metrics if not _metric_is_all_missing(m)]
+
+    period_range = None
+    if financials.get("earliest_period_end") and financials.get("latest_period_end"):
+        period_range = f"{financials['earliest_period_end']} 〜 {financials['latest_period_end']}"
+
+    interim_raw = financials.get("interim")
+    interim = None
+    if interim_raw:
+        interim = {
+            "period_end": interim_raw.get("period_end"),
+            "prior_period_end": interim_raw.get("prior_period_end"),
+            "rows": [
+                {
+                    "label": item["label"],
+                    "value_display": _metric_value_display(item),
+                    "change_display": _change_display(item.get("change_pct"), item.get("change_kind")),
+                }
+                for item in (interim_raw.get("items") or [])
+            ],
         }
-
-    n = len(periods)
-    revenue = _fin_series(financials, "revenue", n)
-    operating_income = _fin_series(financials, "operating_income", n)
-    net_income = _fin_series(financials, "net_income", n)
-    operating_margin = _fin_series(financials, "operating_margin", n)
-    equity_ratio = _fin_series(financials, "equity_ratio", n)
-    roe = _fin_series(financials, "roe", n)
-    eps = _fin_series(financials, "eps", n)
-    cf = financials.get("cf") or {}
-    per = financials.get("per") or {}
-
-    kpis = [
-        _fin_kpi("売上高", revenue, kind="amount"),
-        _fin_kpi("営業利益", operating_income, kind="amount"),
-        _fin_kpi("EPS", eps, kind="eps"),
-        _fin_kpi("自己資本比率", equity_ratio, kind="percent"),
-        _fin_kpi("ROE", roe, kind="percent"),
-    ]
 
     return {
         "available": True,
         "standard_label": _STANDARD_LABELS.get(financials.get("standard"), financials.get("standard") or "—"),
         "basis_label": _BASIS_LABELS.get(financials.get("basis"), financials.get("basis") or "—"),
-        "period_range": f"{periods[0]} 〜 {periods[-1]}",
+        "period_range": period_range,
         "kpis": kpis,
-        "performance_svg": _fin_performance_svg(periods, revenue, operating_income, net_income, operating_margin),
-        "cf_svg": _fin_cf_svg(periods, cf),
-        "ratio_svg": _fin_ratio_svg(periods, equity_ratio, roe),
-        "per_svg": _fin_per_svg(per),
-        "placeholder_svg": None,
+        "figures": figures,
+        "metric_rows": metric_rows,
+        "interim": interim,
+        "notes": list(financials.get("notes") or []),
     }
 
 
@@ -504,8 +595,10 @@ def render_report(
     各観点 → リスク → 注目点 → 指標表・シグナル → 開示一覧 → 免責」。`generated_at` を省略すると
     `data.generated_at`（プロンプト生成時刻）を使う。
 
-    `financials` は任意（P11: 財務数値の取り込みが未実装のため）。渡さなければ財務ハイライトの
-    セクションにプレースホルダを表示する。形式は本モジュールの docstring・PLAN §4 の申し送りを参照。
+    `financials` は任意で、`app.financial_metrics.compute_metrics()` の戻り値そのものを渡す
+    （形式は同モジュールの docstring・SPEC §2.9 を参照。凍結済み）。省略、または
+    `{"available": False}`（財務数値が1件も取得できていない銘柄）のときは、財務ハイライトの
+    KPI・図・指標表を出さず「財務数値は未取得です」の1行だけを表示する。
 
     テンプレートは既定で `app.config.BASE_DIR / "templates"` から探す。テストなど別の場所から
     読ませたい場合は `_environment(templates_dir=...)` を直接使うこと（本関数のシグネチャは

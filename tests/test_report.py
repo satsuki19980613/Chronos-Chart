@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from conftest import make_prices
 
-from app import disclosures
+from app import disclosures, financial_metrics
 from app.ai import report
 from app.ai.prompt import DisclosureItem, PromptInput, PromptSource
 from app.ai.schema import AnalysisReport, SectionAnalysis
@@ -139,6 +139,12 @@ def _prompt_input(**overrides) -> PromptInput:
         ),
         disclosures=(),
         generated_at="2025-01-07 09:00:00",
+        # P11-5 で PromptInput に追加されたフィールド。この報告書生成のテストは
+        # 財務ハイライトそのものではなく他のセクションを見るためのものが多いので、
+        # 既定は「財務数値は未取得」（render_report 側は `financials` 引数を別途受け取るため、
+        # ここは PromptSource が実際に載せる値の型合わせが目的）。
+        financials={"available": False},
+        compressed=None,
     )
     base.update(overrides)
     return PromptInput(**base)
@@ -147,12 +153,14 @@ def _prompt_input(**overrides) -> PromptInput:
 def _analysis_report(**overrides) -> AnalysisReport:
     base = dict(
         technical=SectionAnalysis(evidence=["SMAが上向き"], assessment="上昇基調にある"),
+        fundamental=SectionAnalysis(evidence=["ROEが改善"], assessment="財務は堅調"),
         disclosure=SectionAnalysis(evidence=["特段の開示なし"], assessment="材料は乏しい"),
         risks=["急な悪材料が出た場合の下振れリスク"],
         watch_points=["次回の有価証券報告書の提出時期"],
         verdict="bullish",
         confidence="medium",
         summary="総じて強気",
+        data_scope_note="会社予想との比較・同業他社との比較は対象外。需給データは分析に含まない。",
     )
     base.update(overrides)
     return AnalysisReport(**base)
@@ -370,26 +378,43 @@ def test_html_is_self_contained_single_file():
 # ---------------------------------------------------------------------------
 # P12-2: レポートの視覚強化（図・financials・折りたたみ）
 # ---------------------------------------------------------------------------
-def _sample_financials() -> dict:
-    """`financials` の合成データ（P11 が渡す想定の形。SPEC・PLAN §4 の申し送り参照）。"""
-    return {
-        "standard": "ifrs",
-        "basis": "consolidated",
-        "periods": ["2022/3期", "2023/3期", "2024/3期", "2025/3期", "2026/3期"],
-        "revenue": [3.0e13, 3.1e13, 3.7e13, 4.5e13, 4.8e13],
-        "operating_income": [2.9e12, 3.0e12, 5.3e12, 5.35e12, 4.8e12],
-        "net_income": [2.85e12, 2.45e12, 4.9e12, 4.77e12, 3.9e12],
-        "operating_margin": [0.097, 0.097, 0.143, 0.119, 0.10],
-        "cf": {
-            "operating": [3.0e12, 3.5e12, 4.9e12, 5.1e12, 4.5e12],
-            "investing": [-2.0e12, -2.2e12, -2.8e12, -3.0e12, -2.5e12],
-            "financing": [-0.8e12, -1.0e12, -1.5e12, -1.8e12, -1.2e12],
-        },
-        "equity_ratio": [0.36, 0.37, 0.38, 0.39, 0.40],
-        "roe": [0.085, 0.075, 0.132, 0.121, 0.095],
-        "eps": [180.5, 155.2, 330.8, 320.1, 270.4],
-        "per": {"low": 8.5, "high": 15.2, "current": 10.8},
-    }
+_SAMPLE_PERIOD_ENDS = ["2022-03-31", "2023-03-31", "2024-03-31", "2025-03-31", "2026-03-31"]
+
+# `financial_metrics.compute_metrics()` への入力（`app.financials.load_series()` の契約）の合成データ。
+# P11-6 は「1指標1行」に要約済みの戻り値を受け取る側なので、ここでは実物の変換経路を通して
+# 本物の形（`available` / `metrics` / `interim` 等）を作る。ROE・自己資本比率等の `%` 指標は
+# 分数（0.xx）ではなく**そのままの %数値**（例: 12.5）で渡す（financial_metrics の実際の契約）。
+_SAMPLE_RAW = {
+    "revenue": [3.0e13, 3.1e13, 3.7e13, 4.5e13, 4.8e13],
+    "net_income": [2.85e12, 2.45e12, 4.9e12, 4.77e12, 3.9e12],
+    "eps": [180.5, 155.2, 330.8, 320.1, 270.4],
+    "total_assets": [8.0e13, 8.3e13, 8.9e13, 9.4e13, 9.9e13],
+    "net_assets": [None, None, None, None, None],  # IFRS は equity のみ（net_assets は常に欠測が正常）
+    "equity": [2.9e13, 3.0e13, 3.3e13, 3.6e13, 3.9e13],
+    "operating_cf": [3.0e12, 3.5e12, 4.9e12, 5.1e12, 4.5e12],
+    "investing_cf": [-2.0e12, -2.2e12, -2.8e12, -3.0e12, -2.5e12],  # free_cash_flow の内部計算にのみ使う
+    "roe": [8.5, 7.5, 13.2, 12.1, 9.5],
+    "equity_ratio": [36.0, 37.0, 38.0, 39.0, 40.0],
+    "per": [8.5, 12.0, 9.8, 15.2, 10.8],
+    "payout_ratio": [30.0, 28.0, 25.0, 27.0, 33.0],
+}
+
+
+def _build_series(overrides: dict[str, list] | None = None, *, basis: str = "consolidated", standard: str = "ifrs") -> dict:
+    """`app.financials.load_series()` が返す形の合成 `series`（`compute_metrics()` への入力）。"""
+    raw = dict(_SAMPLE_RAW)
+    if overrides:
+        raw.update(overrides)
+    periods = [
+        {"period_end": end, "items": {key: values[i] for key, values in raw.items()}}
+        for i, end in enumerate(_SAMPLE_PERIOD_ENDS)
+    ]
+    return {"basis": basis, "standard": standard, "periods": periods, "interim": None}
+
+
+def _sample_financials(overrides: dict[str, list] | None = None, **kwargs) -> dict:
+    """`financial_metrics.compute_metrics()` の戻り値そのもの（本物の変換経路を通して作る）。"""
+    return financial_metrics.compute_metrics(_build_series(overrides, **kwargs))
 
 
 def test_price_chart_is_rendered():
@@ -476,34 +501,91 @@ def test_price_chart_markers_exclude_dates_outside_price_csv():
 
 
 def test_financials_none_renders_placeholder_without_error():
-    """`financials` を省略しても例外にならず、プレースホルダが出ること（セクション自体は消さない）。"""
+    """`financials` を省略しても例外にならず、「未取得」の1行だけが出ること（セクション自体は消さない）。"""
     html = report.render_report(_prompt_input(), _analysis_report(), model="m")
     assert "財務ハイライト" in html
-    assert "財務数値はまだ取得していません" in html
+    assert "財務数値は未取得です" in html
     assert '<div class="kpi-grid">' not in html
+    # 財務数値が無くても AI の「財務の観点」（fundamental）は出す
+    assert 'id="fundamental"' in html
 
 
 def test_financials_empty_dict_also_renders_placeholder():
     html = report.render_report(_prompt_input(), _analysis_report(), model="m", financials={})
-    assert "財務数値はまだ取得していません" in html
+    assert "財務数値は未取得です" in html
 
 
 def test_financials_provided_renders_kpi_cards_and_charts():
     """優先度A: financials を渡すと KPI カードと各図が出ること。"""
-    html = report.render_report(
-        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
-    )
+    financials = _sample_financials()
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m", financials=financials)
     assert "kpi-grid" in html
-    for label in ("売上高", "営業利益", "EPS", "自己資本比率", "ROE"):
+    # KPI カード: 売上高・当期純利益・ROE・自己資本比率（営業利益は EDINET から取得できないため出さない）
+    for label in ("売上高", "当期純利益", "ROE", "自己資本比率"):
         assert label in html
     assert "IFRS" in html
     assert "連結" in html
-    assert "2022/3期" in html and "2026/3期" in html
+    assert "2022-03-31" in html and "2026-03-31" in html
     assert "cc-chart--bars-line" in html  # 業績5期推移
     assert "cc-chart--grouped-bars" in html  # キャッシュフロー5期推移
     assert "cc-chart--bullet" in html  # PER レンジ
     # 良化・悪化を色だけに頼らない: ▲▼ の記号が併記されること
     assert "▲" in html or "▼" in html
+    # 金額は百万円単位の3桁区切り（円のままだと桁が読めない）
+    revenue_millions = _SAMPLE_RAW["revenue"][-1] / 1_000_000
+    assert f"{revenue_millions:,.0f}百万円" in html
+    # net_assets は IFRS では常に欠測 -> 値も履歴も全部 None の指標は表に出ない
+    assert "純資産" not in html
+
+
+def test_change_kind_distinguishes_pt_and_pct_suffix():
+    """`change_kind` が `pt` の指標が『pt』、`pct` の指標が『%』で表示されること。"""
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    revenue_row = re.search(r"<tr>\s*<td>売上高（収益）</td>.*?</tr>", html, re.DOTALL).group(0)
+    roe_row = re.search(r"<tr>\s*<td>ROE（自己資本利益率）</td>.*?</tr>", html, re.DOTALL).group(0)
+    assert "%" in revenue_row
+    assert "pt" not in revenue_row
+    assert "pt" in roe_row
+
+
+def test_metric_table_columns_present():
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    for header in ("指標", "最新値", "前期比", "トレンド", "CAGR", "レンジ内の位置", "出所"):
+        assert header in html
+    assert "開示値そのまま" in html
+    assert "アプリで計算" in html
+
+
+def test_interim_table_shown_only_when_present():
+    """`interim` があるときだけ中間期の表が出て、6か月である旨が明記されること。"""
+    series = _build_series()
+    series["interim"] = {
+        "period_end": "2025-09-30",
+        "items": {"revenue": 2.4e13, "net_income": 1.5e12},
+        "prior": {"period_end": "2024-09-30", "items": {"revenue": 2.2e13, "net_income": 1.4e12}},
+    }
+    financials = financial_metrics.compute_metrics(series)
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m", financials=financials)
+    assert "中間期" in html
+    assert "6か月" in html
+    assert "2025-09-30" in html
+    assert "2024-09-30" in html
+
+    # interim が無い（既定の _sample_financials）場合は中間期の見出しが出ない
+    html_no_interim = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    assert "中間期（半期報告書）の実績" not in html_no_interim
+
+
+def test_data_scope_note_rendered():
+    note = "会社予想との比較・同業他社比較は対象外。需給データは分析に含まない。SENTINEL_SCOPE_NOTE"
+    html = report.render_report(_prompt_input(), _analysis_report(data_scope_note=note), model="m")
+    assert "SENTINEL_SCOPE_NOTE" in html
 
 
 def test_scripts_are_only_the_bundled_chart():
@@ -580,17 +662,17 @@ def test_generated_html_size_is_reasonable():
 def test_ratio_kpi_delta_is_point_difference_not_percent_of_percent():
     """比率指標（ROE・自己資本比率）の増減は「率の変化率」ではなく「ポイント差」で示す。
 
-    0.150 -> 0.343 を charts.delta_mark() にそのまま通すと「▲128.7%」という誤読を招く表示に
-    なる（(0.343-0.150)/0.150 = 128.7%）。report.py 側でポイント差（19.3pt）に変換すること。
+    `financial_metrics` が既に `change_kind='pt'` で `pt_diff`（15.0 -> 34.3 なら 19.3pt）を
+    計算済みなので、report.py 側はそれをそのまま「19.3pt」と表示すればよく、
+    誤って変化率（(34.3-15.0)/15.0*100 = 128.7%）に読み替えないことを確かめる。
     """
-    financials = _sample_financials()
-    financials["roe"] = [0.150, 0.150, 0.150, 0.150, 0.343]
+    financials = _sample_financials({"roe": [15.0, 15.0, 15.0, 15.0, 34.3]})
     html = report.render_report(
         _prompt_input(), _analysis_report(), model="m", financials=financials
     )
     assert "19.3pt" in html
     assert "128.7%" not in html
-    # 自己資本比率も同様（サンプルデータは 0.39 -> 0.40 = 1.0pt）
+    # 自己資本比率も同様（サンプルデータは 39.0 -> 40.0 = 1.0pt）
     assert "1.0pt" in html
 
 
@@ -609,14 +691,25 @@ def test_kpi_delta_has_no_direction_based_color_class():
 
 
 def test_all_none_series_dropped_from_financial_chart_legends():
-    """全期間が None の系列は、業績・CF・比率いずれの図でも凡例から外す。"""
-    financials = _sample_financials()
-    financials["operating_income"] = [None] * 5  # IFRS で営業利益を区分表示していない想定
+    """全期間が None の系列は、業績・CF・比率いずれの図でも凡例から外す。
+
+    両方の系列が揃っているときは業績5期推移の凡例に両方の名前が出るが、片方が全期間 `None` に
+    なると凡例からその名前が消える（残り1系列だけでは `charts.bars_with_line` は凡例自体を
+    出さない仕様のため、「消えたことだけ」を検査する）。
+    """
+    html_both = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    assert "売上高（百万円）" in html_both
+    assert "当期純利益（百万円）" in html_both
+
+    financials = _sample_financials({"net_income": [None] * 5})
     html = report.render_report(
         _prompt_input(), _analysis_report(), model="m", financials=financials
     )
-    assert "売上高（兆円）" in html
-    assert "営業利益（兆円）" not in html
+    assert "当期純利益（百万円）" not in html
+    # 当期純利益の行自体は（値も履歴も全部 None なので）指標表からも省かれる
+    assert "<td>当期純利益</td>" not in html
 
 
 def test_sma75_color_differs_from_sma25():
@@ -644,13 +737,12 @@ def test_sma75_color_differs_from_sma25():
 
 def test_kpi_card_without_value_shows_a_reason():
     """値が取得できない KPI カードには、なぜ空なのか分かる理由を添える。"""
-    financials = _sample_financials()
-    financials["operating_income"] = [None] * 5
+    financials = _sample_financials({"revenue": [None] * 5})
     html = report.render_report(
         _prompt_input(), _analysis_report(), model="m", financials=financials
     )
     assert "kpi-note" in html
-    assert "取得できません" in html
+    assert "取得できていません" in html
 
 
 def test_technical_badge_has_disambiguating_caveat():

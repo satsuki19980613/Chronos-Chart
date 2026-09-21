@@ -313,7 +313,11 @@ def ai_analyze_job(db: Any, settings: Any) -> Callable[[Any, dict], dict]:
         )
 
         ctx.progress(1, 1, "レポート生成中")
-        html = report.render_report(result.data, result.report, model=result.model)
+        # PromptInput.financials は P11-5（別作業者）が追加中のフィールド。この行を書いた時点では
+        # まだ無いかもしれないため getattr で安全に読む（無ければ None → render_report は
+        # 「財務数値は未取得です」の1行にフォールバックする）。P11-5 が入れば自動的に値が流れる
+        financials = getattr(result.data, "financials", None)
+        html = report.render_report(result.data, result.report, model=result.model, financials=financials)
         saved = report.save_report(
             db,
             config.REPORTS_DIR,
