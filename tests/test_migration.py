@@ -23,6 +23,19 @@ def test_fresh_db_gets_latest_schema(tmp_path):
     assert {"stocks", "prices", "indicators", "settings", "fetch_log"} <= _tables(db)
     assert {"short_positions", "short_totals", "margin_balances"} <= _tables(db)
     assert "edinet_codes" in _tables(db)
+    assert {"disclosures", "disclosure_links"} <= _tables(db)
+    assert {"ai_usage", "ai_reports"} <= _tables(db)
+
+
+def test_ai_usage_has_the_columns_the_quota_manager_needs(tmp_path):
+    """SPEC §3。requests は「送信を試みた回数」なので、成功・失敗を問わず加算される。"""
+    db = Database(tmp_path / "ai.db")
+    db.init_schema()
+    with db.connect() as conn:
+        usage = {r["name"] for r in conn.execute("PRAGMA table_info(ai_usage)")}
+        reports = {r["name"] for r in conn.execute("PRAGMA table_info(ai_reports)")}
+    assert usage == {"date_pt", "model", "requests", "in_tokens", "out_tokens", "exhausted"}
+    assert reports == {"id", "symbol", "created_at", "model", "path", "in_tokens", "out_tokens"}
 
 
 def test_margin_balances_survives_migration(tmp_path, monkeypatch):

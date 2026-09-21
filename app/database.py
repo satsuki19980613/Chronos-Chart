@@ -418,6 +418,39 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v5(conn: sqlite3.Connection) -> None:
+    """Gemini のクォータ管理と生成済みレポート（SPEC §2.7.2・§2.7.6・§3）。
+
+    ai_usage は太平洋時間の日付ごと・モデルごとの使用量。requests は「送信を試みた回数」で、
+    失敗した送信も枠を消費するため成功時ではなく送信直前に加算する（SPEC §2.7.2）。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_usage (
+            date_pt    TEXT NOT NULL,
+            model      TEXT NOT NULL,
+            requests   INTEGER NOT NULL DEFAULT 0,
+            in_tokens  INTEGER NOT NULL DEFAULT 0,
+            out_tokens INTEGER NOT NULL DEFAULT 0,
+            exhausted  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date_pt, model)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_reports (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol     TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            model      TEXT NOT NULL,
+            path       TEXT NOT NULL,
+            in_tokens  INTEGER,
+            out_tokens INTEGER
+        )
+        """
+    )
+
 # (バージョン, 移行関数)。追加するときは末尾に足し、既存の関数は書き換えない。
 # 貸借取引残高（margin_balances）は再取得できないので、どの移行でも DROP しないこと。
 MIGRATIONS = [
@@ -425,4 +458,5 @@ MIGRATIONS = [
     (2, _migrate_v2),
     (3, _migrate_v3),
     (4, _migrate_v4),
+    (5, _migrate_v5),
 ]
