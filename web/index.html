@@ -258,49 +258,63 @@
       </div>
 
       <div class="reports-grid">
-        <div class="panel">
-          <div class="panel-head">
-            <h2>AI分析レポートを作成</h2>
-            <p class="hint">送るのは銘柄情報・株価とテクニカル指標・EDINETの開示（本文は含まない）だけです。需給データ（空売り残高・貸借取引残高）は送信しません。</p>
-          </div>
-          <div class="field">
-            <label class="field-label" for="report-stock-select">銘柄</label>
-            <select class="input select" id="report-stock-select" aria-label="銘柄"></select>
-          </div>
-          <div class="field">
-            <span class="field-label">期間</span>
-            <div class="segmented" id="report-days">
-              <button data-days="20">直近20日</button>
-              <button data-days="60" class="is-active">直近60日</button>
-              <button data-days="120">直近120日</button>
+        <!-- 左: 作成パネルと一覧（P12-3で1カラムに束ねてプレビューと並べる） -->
+        <div class="reports-side">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>AI分析レポートを作成</h2>
+              <p class="hint">送るのは銘柄情報・株価とテクニカル指標・EDINETの開示（本文は含まない）だけです。需給データ（空売り残高・貸借取引残高）は送信しません。</p>
             </div>
+            <div class="field">
+              <label class="field-label" for="report-stock-select">銘柄</label>
+              <select class="input select" id="report-stock-select" aria-label="銘柄"></select>
+            </div>
+            <div class="field">
+              <span class="field-label">期間</span>
+              <div class="segmented" id="report-days">
+                <button data-days="20">直近20日</button>
+                <button data-days="60" class="is-active">直近60日</button>
+                <button data-days="120">直近120日</button>
+              </div>
+            </div>
+            <p class="notice" id="report-unavailable" hidden></p>
+            <div class="btn-row" id="report-unavailable-actions" hidden>
+              <button class="btn btn-sm" id="report-goto-settings">設定タブへ移動</button>
+            </div>
+            <button class="btn btn-primary btn-block" id="report-run" disabled>分析を実行</button>
+            <p class="hint">AI の出力は検証されていません。投資助言ではありません。</p>
+            <p class="hint">開示は EDINET の法定開示のみです。決算短信・業績修正（TDnet）は対象外です。</p>
           </div>
-          <p class="notice" id="report-unavailable" hidden></p>
-          <div class="btn-row" id="report-unavailable-actions" hidden>
-            <button class="btn btn-sm" id="report-goto-settings">設定タブへ移動</button>
+
+          <div class="panel">
+            <div class="panel-head row">
+              <h2>生成済みレポート</h2>
+              <button class="btn btn-ghost btn-sm" id="open-reports-folder">保存フォルダを開く</button>
+            </div>
+            <p class="hint">カードをクリックすると右側にプレビュー表示します。</p>
+            <ul class="report-cards" id="report-list"></ul>
+            <p class="empty" id="report-list-empty" hidden>まだレポートを作成していません。</p>
           </div>
-          <button class="btn btn-primary btn-block" id="report-run" disabled>分析を実行</button>
-          <p class="hint">AI の出力は検証されていません。投資助言ではありません。</p>
-          <p class="hint">開示は EDINET の法定開示のみです。決算短信・業績修正（TDnet）は対象外です。</p>
         </div>
 
-        <div class="panel">
+        <!-- 右: 選択中レポートのプレビュー（P12-3。data/reports は配信できないので srcdoc で表示する） -->
+        <div class="panel reports-preview">
           <div class="panel-head row">
-            <h2>生成済みレポート</h2>
-            <button class="btn" id="open-reports-folder">保存フォルダを開く</button>
+            <h2>プレビュー</h2>
+            <button class="btn btn-sm" id="report-preview-open-browser" disabled>ブラウザで開く</button>
           </div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>生成日時</th><th>銘柄</th><th>モデル</th>
-                  <th class="num">入力トークン</th><th class="num">出力トークン</th><th class="col-actions"></th>
-                </tr>
-              </thead>
-              <tbody id="report-list"></tbody>
-            </table>
+          <dl class="quote-stats report-preview-meta" id="report-preview-meta" hidden>
+            <div><dt>銘柄</dt><dd id="report-preview-symbol"></dd></div>
+            <div><dt>生成日時</dt><dd id="report-preview-created"></dd></div>
+            <div><dt>モデル</dt><dd id="report-preview-model"></dd></div>
+            <div><dt>入力トークン</dt><dd id="report-preview-in"></dd></div>
+            <div><dt>出力トークン</dt><dd id="report-preview-out"></dd></div>
+          </dl>
+          <p class="empty big" id="report-preview-placeholder">レポートを作成すると、ここに表示されます</p>
+          <p class="notice" id="report-preview-error" hidden></p>
+          <div class="report-frame-wrap" id="report-preview-frame-wrap" hidden>
+            <iframe class="report-frame" id="report-preview-frame" sandbox="" title="レポートのプレビュー"></iframe>
           </div>
-          <p class="empty" id="report-list-empty" hidden>まだレポートを作成していません。</p>
         </div>
       </div>
     </section>

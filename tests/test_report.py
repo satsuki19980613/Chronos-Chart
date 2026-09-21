@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -350,6 +351,232 @@ def test_html_is_self_contained_single_file():
 
     for m in re.finditer(r'href="([^"]*)"', html):
         assert m.group(1).startswith("#"), f"外部参照の href が見つかった: {m.group(1)}"
+
+
+# ---------------------------------------------------------------------------
+# P12-2: レポートの視覚強化（図・financials・折りたたみ）
+# ---------------------------------------------------------------------------
+def _sample_financials() -> dict:
+    """`financials` の合成データ（P11 が渡す想定の形。SPEC・PLAN §4 の申し送り参照）。"""
+    return {
+        "standard": "ifrs",
+        "basis": "consolidated",
+        "periods": ["2022/3期", "2023/3期", "2024/3期", "2025/3期", "2026/3期"],
+        "revenue": [3.0e13, 3.1e13, 3.7e13, 4.5e13, 4.8e13],
+        "operating_income": [2.9e12, 3.0e12, 5.3e12, 5.35e12, 4.8e12],
+        "net_income": [2.85e12, 2.45e12, 4.9e12, 4.77e12, 3.9e12],
+        "operating_margin": [0.097, 0.097, 0.143, 0.119, 0.10],
+        "cf": {
+            "operating": [3.0e12, 3.5e12, 4.9e12, 5.1e12, 4.5e12],
+            "investing": [-2.0e12, -2.2e12, -2.8e12, -3.0e12, -2.5e12],
+            "financing": [-0.8e12, -1.0e12, -1.5e12, -1.8e12, -1.2e12],
+        },
+        "equity_ratio": [0.36, 0.37, 0.38, 0.39, 0.40],
+        "roe": [0.085, 0.075, 0.132, 0.121, 0.095],
+        "eps": [180.5, 155.2, 330.8, 320.1, 270.4],
+        "per": {"low": 8.5, "high": 15.2, "current": 10.8},
+    }
+
+
+def test_price_chart_is_rendered():
+    """優先度A: 株価チャート（終値＋SMA5/25/75）が入っていること。"""
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    chart_section = html.split('id="price-chart"')[1].split("<h2")[0]
+    assert "<svg" in chart_section
+    assert "cc-chart--line" in chart_section
+
+
+def test_multiple_svgs_present():
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    assert html.count("<svg") >= 2
+
+
+def test_price_chart_markers_exclude_dates_outside_price_csv():
+    """マーカーの日付は株価 CSV に存在する日付だけに絞る（期間外の日付は渡さない）。"""
+    data = _prompt_input(
+        price_csv=(
+            "date,open,high,low,close,volume\n"
+            "2025-01-06,100,101,99,100,1000\n"
+            "2025-01-07,100,102,98,101,1200\n"
+        ),
+        indicator_csv=(
+            "date,sma_5,sma_25,sma_75\n2025-01-06,100,,\n2025-01-07,100.5,,\n"
+        ),
+        signals=(
+            MappingProxyType(
+                {"date": "2025-01-06", "direction": "buy", "label": "INRANGE_SIGNAL", "short": "GC"}
+            ),
+            MappingProxyType(
+                {"date": "2099-12-31", "direction": "sell", "label": "OUTOFRANGE_SIGNAL", "short": "DC"}
+            ),
+        ),
+        disclosures=(),
+    )
+    html = report.render_report(data, _analysis_report(), model="m")
+    chart_section = html.split('id="price-chart"')[1].split("<h2")[0]
+    assert "INRANGE_SIGNAL" in chart_section
+    assert "OUTOFRANGE_SIGNAL" not in chart_section
+
+
+def test_financials_none_renders_placeholder_without_error():
+    """`financials` を省略しても例外にならず、プレースホルダが出ること（セクション自体は消さない）。"""
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    assert "財務ハイライト" in html
+    assert "財務数値はまだ取得していません" in html
+    assert '<div class="kpi-grid">' not in html
+
+
+def test_financials_empty_dict_also_renders_placeholder():
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m", financials={})
+    assert "財務数値はまだ取得していません" in html
+
+
+def test_financials_provided_renders_kpi_cards_and_charts():
+    """優先度A: financials を渡すと KPI カードと各図が出ること。"""
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    assert "kpi-grid" in html
+    for label in ("売上高", "営業利益", "EPS", "自己資本比率", "ROE"):
+        assert label in html
+    assert "IFRS" in html
+    assert "連結" in html
+    assert "2022/3期" in html and "2026/3期" in html
+    assert "cc-chart--bars-line" in html  # 業績5期推移
+    assert "cc-chart--grouped-bars" in html  # キャッシュフロー5期推移
+    assert "cc-chart--bullet" in html  # PER レンジ
+    # 良化・悪化を色だけに頼らない: ▲▼ の記号が併記されること
+    assert "▲" in html or "▼" in html
+
+
+def test_no_script_tag_anywhere():
+    """サンドボックス iframe で表示するため <script> は一切出力しない。"""
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    assert "<script" not in html
+
+
+def test_details_used_for_collapsing_extra_indicators():
+    """指標値の詳細: 主要指標以外は <details> に折りたたむこと。"""
+    latest = (
+        MappingProxyType({"key": "sma", "label": "移動平均", "status": "bull", "value": 12.3, "note": "上昇中"}),
+        MappingProxyType({"key": "macd", "label": "MACD", "status": "bull", "value": 1.1, "note": "上"}),
+        MappingProxyType({"key": "adx", "label": "DMI/ADX", "status": "neutral", "value": 20.0, "note": "弱い"}),
+        MappingProxyType({"key": "rsi", "label": "RSI 中期(14)", "status": "neutral", "value": 55.0, "note": "中立圏"}),
+        MappingProxyType({"key": "rci", "label": "RCI 短期(9)", "status": "neutral", "value": 10.0, "note": "中立圏"}),
+    )
+    html = report.render_report(_prompt_input(latest=latest), _analysis_report(), model="m")
+    assert "<details" in html
+    assert "そのほかの" in html
+
+
+def test_print_and_dark_mode_css_present():
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    assert "@media print" in html
+    assert "@media (prefers-color-scheme: dark)" in html
+
+
+def test_generated_html_size_is_reasonable():
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    assert len(html.encode("utf-8")) < 200_000
+    html_fin = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    assert len(html_fin.encode("utf-8")) < 200_000
+
+
+# ---------------------------------------------------------------------------
+# P12-2 フィードバック対応（実データ確認後の修正）
+# ---------------------------------------------------------------------------
+def test_ratio_kpi_delta_is_point_difference_not_percent_of_percent():
+    """比率指標（ROE・自己資本比率）の増減は「率の変化率」ではなく「ポイント差」で示す。
+
+    0.150 -> 0.343 を charts.delta_mark() にそのまま通すと「▲128.7%」という誤読を招く表示に
+    なる（(0.343-0.150)/0.150 = 128.7%）。report.py 側でポイント差（19.3pt）に変換すること。
+    """
+    financials = _sample_financials()
+    financials["roe"] = [0.150, 0.150, 0.150, 0.150, 0.343]
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=financials
+    )
+    assert "19.3pt" in html
+    assert "128.7%" not in html
+    # 自己資本比率も同様（サンプルデータは 0.39 -> 0.40 = 1.0pt）
+    assert "1.0pt" in html
+
+
+def test_kpi_delta_has_no_direction_based_color_class():
+    """KPI カードの増減は色で良し悪しを言わない（▲▼の記号だけで方向を示す。本文色のまま）。
+
+    `charts.delta_mark` 由来の "is-up"/"is-down" というクラス名自体は残ってよいが、
+    それに色（--bull/--bear）を割り当てる CSS ルールを持たないことを検査する。
+    """
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=_sample_financials()
+    )
+    assert ".kpi-delta.is-up" not in html
+    assert ".kpi-delta.is-down" not in html
+    assert ".kpi-delta.is-flat" not in html
+
+
+def test_all_none_series_dropped_from_financial_chart_legends():
+    """全期間が None の系列は、業績・CF・比率いずれの図でも凡例から外す。"""
+    financials = _sample_financials()
+    financials["operating_income"] = [None] * 5  # IFRS で営業利益を区分表示していない想定
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=financials
+    )
+    assert "売上高（兆円）" in html
+    assert "営業利益（兆円）" not in html
+
+
+def test_sma75_color_differs_from_sma25():
+    """SMA25 と SMA75 が両方とも青系だと重なったとき見分けがつかないため、別系統の色にする。"""
+    dates = [f"2025-01-{d:02d}" for d in range(1, 21)]
+    price_rows = ["date,open,high,low,close,volume"]
+    ind_rows = ["date,sma_5,sma_25,sma_75"]
+    for i, d in enumerate(dates):
+        c = 100 + i
+        price_rows.append(f"{d},{c-1},{c+1},{c-2},{c},1000")
+        ind_rows.append(f"{d},{c-0.5},{c-1.0},{c-1.5}")
+    data = _prompt_input(
+        price_csv="\n".join(price_rows) + "\n",
+        indicator_csv="\n".join(ind_rows) + "\n",
+        signals=(),
+        disclosures=(),
+    )
+    html = report.render_report(data, _analysis_report(), model="m")
+    chart_section = html.split('id="price-chart"')[1].split("<h2")[0]
+    color_25 = re.search(r'stroke="([^"]+)"[^>]*/><text[^>]*>SMA25</text>', chart_section)
+    color_75 = re.search(r'stroke="([^"]+)"[^>]*/><text[^>]*>SMA75</text>', chart_section)
+    assert color_25 is not None and color_75 is not None
+    assert color_25.group(1) != color_75.group(1)
+
+
+def test_kpi_card_without_value_shows_a_reason():
+    """値が取得できない KPI カードには、なぜ空なのか分かる理由を添える。"""
+    financials = _sample_financials()
+    financials["operating_income"] = [None] * 5
+    html = report.render_report(
+        _prompt_input(), _analysis_report(), model="m", financials=financials
+    )
+    assert "kpi-note" in html
+    assert "取得できません" in html
+
+
+def test_technical_badge_has_disambiguating_caveat():
+    """テクニカルバッジは AI の総合判定とは別の集計であることを明示する。"""
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    section = html.split('id="technical"')[1].split("<h2")[0]
+    assert "総合判定" in section
+    assert "とは別" in section
+
+
+def test_body_is_centered():
+    """広いウィンドウで開いても左に寄らないよう、本文は中央寄せにする。"""
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    assert "margin: 0 auto;" in html
 
 
 # ---------------------------------------------------------------------------
