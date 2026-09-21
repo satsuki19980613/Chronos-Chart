@@ -3,7 +3,8 @@
 **CLAUDE.md 不変条件1（最重要）**: 需給データ（空売り残高・貸借取引残高）をレポートに載せない。
 このモジュールが受け取るのは `app.ai.prompt.PromptInput`（= AI に実際に送った内容そのもの）と
 `app.ai.schema.AnalysisReport`（= AI の出力）、そして任意で財務ハイライト用の `financials` 辞書
-（P11 が渡す形。値そのものはこのモジュールが取得するわけではない）だけなので、需給が混入する経路が無い。
+（P11 が渡す形。値そのものはこのモジュールが取得するわけではない）・数値の実在検証結果の `verify` 辞書
+（`app.ai.verify.verify_numbers()` の戻り値。SPEC §2.9.9）だけなので、需給が混入する経路が無い。
 `service.dashboard()` の payload（需給の表示データを含む）はここでは一切参照しない。
 
 HTML は Jinja2 の単一テンプレート（`templates/report.html.j2`）から生成する。外部 CSS/画像は
@@ -97,6 +98,16 @@ _FIN_KPI_MISSING_NOTE_DEFAULT = "値を取得できていません（データ�
 _FIN_SOURCE_LABELS = {"disclosed": "開示値そのまま", "computed": "アプリで計算"}
 _JPY_UNIT_DIVISOR = 1_000_000.0
 _JPY_UNIT_LABEL = "百万円"
+
+# 数値の実在検証（`app.ai.verify.verify_numbers` の戻り値。SPEC §2.9.9）の表示に添える限界の説明。
+# `verify.py` の docstring と同じ内容を、画面側にも必ず出す（依頼元の指示）。AI の出力ではなく
+# アプリが書いた固定文なので、autoescape の対象になっても問題は無い（HTML タグを含まない）
+_VERIFY_LIMITATION_NOTE = (
+    "この検証は、根拠に出てくる数値・日付がプロンプトに渡したデータの中に同じ形で存在するかを"
+    "機械的に確認するだけであり、その数値の使い方（どの指標の値として引用したかなど）が正しいかは"
+    "判定していない。偶然の一致もあり得る。実在しない数値が挙がった場合は、本文を疑う手がかりとして"
+    "扱うこと。"
+)
 
 
 def _role_label(role: str) -> str:
@@ -344,7 +355,10 @@ def _metric_value_display(item: dict) -> str:
 
 
 def _change_display(change: float | None, kind: str | None) -> dict:
-    """前期比（`change_pct`/`change_kind`）を、記号（▲▼→）付きの表示にする。
+    """前期比（`change_pct`/`change_kind`）を、記号（↑↓→）付きの表示にする。
+
+    **記号に ▲▼ を使わない。** 日本語の財務資料では「▲1,000」が「マイナス1,000」を意味するので、
+    増加の印に ▲ を付けると符号が逆に読まれる。方向は ↑↓→ で示し、数値には必ず符号を付ける。
 
     `change_kind` が `'pt'`（ROE・自己資本比率・各成長率など `%` 単位の指標）なら「pt」、
     `'pct'`（金額・1株当たり・PER）なら「%」を付ける（SPEC §2.9.6・依頼元の指示3番）。
@@ -356,15 +370,15 @@ def _change_display(change: float | None, kind: str | None) -> dict:
     change = float(change)
     suffix = "pt" if kind == "pt" else "%"
     if change > 0.05:
-        return {"text": f"▲{change:.1f}{suffix}", "class": "is-up"}
+        return {"text": f"↑+{change:.1f}{suffix}", "class": "is-up"}
     if change < -0.05:
-        return {"text": f"▼{abs(change):.1f}{suffix}", "class": "is-down"}
+        return {"text": f"↓-{abs(change):.1f}{suffix}", "class": "is-down"}
     return {"text": f"→{change:+.1f}{suffix}", "class": "is-flat"}
 
 
 _TREND_DISPLAY = {
-    "改善": {"text": "▲ 改善", "class": "is-up"},
-    "悪化": {"text": "▼ 悪化", "class": "is-down"},
+    "改善": {"text": "↑ 改善", "class": "is-up"},
+    "悪化": {"text": "↓ 悪化", "class": "is-down"},
     "横ばい": {"text": "→ 横ばい", "class": "is-flat"},
 }
 _TREND_DISPLAY_NONE = {"text": "—", "class": "is-na"}
@@ -581,6 +595,35 @@ def _build_financials(financials: dict | None) -> dict:
     }
 
 
+def _verify_rate_display(rate: float | None) -> str:
+    if rate is None:
+        return "—"
+    return f"{rate * 100:.0f}%"
+
+
+def _build_verify(verify: dict | None) -> dict | None:
+    """`app.ai.verify.verify_numbers` の戻り値から、テンプレート表示用の材料を作る。
+
+    `verify` が `None`（検証自体を実行できなかった、または `analyze.py` 側で例外を握りつぶした）
+    ならそのまま `None` を返し、テンプレート側はブロックごと出さない（SPEC §2.9.9 の実装メモ）。
+    """
+    if verify is None:
+        return None
+    checked = verify.get("checked", 0)
+    found = verify.get("found", 0)
+    missing = list(verify.get("missing") or [])
+    return {
+        "checked": checked,
+        "found": found,
+        # missing の各要素（field/number/text）はそのままテンプレートへ渡す。text は AI の出力
+        # そのものなので、テンプレート側は必ず autoescape 経由（`| safe` を使わない）で出す
+        "missing": missing,
+        "rate_display": _verify_rate_display(verify.get("rate")),
+        "all_found": not missing,
+        "limitation_note": _VERIFY_LIMITATION_NOTE,
+    }
+
+
 def render_report(
     data: PromptInput,
     report: AnalysisReport,
@@ -588,6 +631,7 @@ def render_report(
     model: str,
     generated_at: str | None = None,
     financials: dict | None = None,
+    verify: dict | None = None,
 ) -> str:
     """`PromptInput`（送信データ）と `AnalysisReport`（AI の出力）からレポート HTML を組み立てる。
 
@@ -600,10 +644,15 @@ def render_report(
     `{"available": False}`（財務数値が1件も取得できていない銘柄）のときは、財務ハイライトの
     KPI・図・指標表を出さず「財務数値は未取得です」の1行だけを表示する。
 
+    `verify` も任意で、`app.ai.verify.verify_numbers()` の戻り値をそのまま渡す（SPEC §2.9.9）。
+    省略、または `None`（検証を実行できなかった場合。`app/ai/analyze.py` は検証で例外が出ても
+    分析結果自体は失わない設計になっており、そのときここに `None` が渡る）のときは、
+    検証結果のブロックごと出さない（レポート本体を検証の失敗で欠けさせないため）。
+
     テンプレートは既定で `app.config.BASE_DIR / "templates"` から探す。テストなど別の場所から
     読ませたい場合は `_environment(templates_dir=...)` を直接使うこと（本関数のシグネチャは
-    P6-6 が呼ぶ形のまま固定する。`financials` はキーワード専用の追加引数なので、既存の呼び出しは
-    変更なしで動く）。
+    P6-6 が呼ぶ形のまま固定する。`financials` / `verify` はキーワード専用の追加引数なので、
+    既存の呼び出しは変更なしで動く）。
     """
     env = _environment()
     template = env.get_template(TEMPLATE_NAME)
@@ -628,6 +677,7 @@ def render_report(
         "price_chart_container_id": price_chart.CHART_CONTAINER_ID,
         "price_chart_data_id": price_chart.DATA_SCRIPT_ID,
         "fin": _build_financials(financials),
+        "verify": _build_verify(verify),
         "latest_categories": _group_latest_rows(latest_rows),
         "signal_rows": [_signal_row(sig) for sig in data.signals],
         "disclosures": [

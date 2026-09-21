@@ -529,8 +529,9 @@ def test_financials_provided_renders_kpi_cards_and_charts():
     assert "cc-chart--bars-line" in html  # 業績5期推移
     assert "cc-chart--grouped-bars" in html  # キャッシュフロー5期推移
     assert "cc-chart--bullet" in html  # PER レンジ
-    # 良化・悪化を色だけに頼らない: ▲▼ の記号が併記されること
-    assert "▲" in html or "▼" in html
+    # 良化・悪化を色だけに頼らない: ↑↓ の記号が併記されること
+    # （▲▼ は使わない。日本語の財務資料では「▲1,000」がマイナスを意味し、符号が逆に読まれる）
+    assert "↑" in html or "↓" in html
     # 金額は百万円単位の3桁区切り（円のままだと桁が読めない）
     revenue_millions = _SAMPLE_RAW["revenue"][-1] / 1_000_000
     assert f"{revenue_millions:,.0f}百万円" in html
@@ -637,6 +638,63 @@ def test_details_used_for_collapsing_extra_indicators():
     assert "そのほかの" in html
 
 
+# ---------------------------------------------------------------------------
+# 数値の実在検証（P11-6 後半。SPEC §2.9.9・app.ai.verify）
+# ---------------------------------------------------------------------------
+def test_verify_block_shown_with_missing_numbers():
+    """`missing` があるとき、件数・実在しなかった数値と文・限界の説明がすべて出ること。"""
+    verify = {
+        "checked": 23,
+        "found": 21,
+        "missing": [
+            {"field": "technical.evidence[0]", "number": "6810.0", "text": "終値は6,810円で急伸SENTINEL_TEXT"},
+        ],
+        "rate": 21 / 23,
+    }
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m", verify=verify)
+    assert "数値の実在検証" in html
+    assert "23件のうち21件" in html
+    assert "6810.0" in html
+    assert "SENTINEL_TEXT" in html
+    assert "technical.evidence[0]" in html
+    # 限界の説明（機械的な実在チェックに過ぎず、使い方の正しさは判定していないこと）が出る
+    assert "使い方" in html and "判定していない" in html
+
+
+def test_verify_block_is_one_line_when_nothing_missing():
+    verify = {"checked": 10, "found": 10, "missing": [], "rate": 1.0}
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m", verify=verify)
+    assert "数値の実在検証" in html
+    assert "10件すべて" in html
+    # missing が空なので、実在しなかった数値の列挙（<li>）は出ない
+    assert "実在しなかったもの" not in html
+
+
+def test_verify_block_absent_when_verify_is_none():
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m", verify=None)
+    assert "数値の実在検証" not in html
+
+    # verify を渡さない（既定値）場合も同様にブロックが出ない
+    html_default = report.render_report(_prompt_input(), _analysis_report(), model="m")
+    assert "数値の実在検証" not in html_default
+
+
+def test_verify_block_ai_text_is_escaped():
+    """`missing` の `text`（AI の出力そのもの）が `<script>` 文脈に混入しないこと。"""
+    verify = {
+        "checked": 1,
+        "found": 0,
+        "missing": [
+            {"field": "summary", "number": "1.0", "text": "<script>alert(1)</script>"},
+        ],
+        "rate": 0.0,
+    }
+    html = report.render_report(_prompt_input(), _analysis_report(), model="m", verify=verify)
+    for m in re.finditer(r"<script\b[^>]*>(.*?)</script>", html, flags=re.DOTALL):
+        assert "<script>alert(1)</script>" not in m.group(1)
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
 def test_print_and_dark_mode_css_present():
     html = report.render_report(_prompt_input(), _analysis_report(), model="m")
     assert "@media print" in html
@@ -677,7 +735,7 @@ def test_ratio_kpi_delta_is_point_difference_not_percent_of_percent():
 
 
 def test_kpi_delta_has_no_direction_based_color_class():
-    """KPI カードの増減は色で良し悪しを言わない（▲▼の記号だけで方向を示す。本文色のまま）。
+    """KPI カードの増減は色で良し悪しを言わない（↑↓の記号だけで方向を示す。本文色のまま）。
 
     `charts.delta_mark` 由来の "is-up"/"is-down" というクラス名自体は残ってよいが、
     それに色（--bull/--bear）を割り当てる CSS ルールを持たないことを検査する。

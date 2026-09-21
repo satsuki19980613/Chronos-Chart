@@ -108,7 +108,10 @@ def format_percent(value: Any, *, digits: int = 1) -> str:
 
 
 def delta_mark(current: Any, previous: Any) -> dict:
-    """前期・前日比などの増減を、記号（▲▼→）付きの表示情報にする。
+    """前期・前日比などの増減を、記号（↑↓→）付きの表示情報にする。
+
+    **▲▼ は使わない。** 日本語の財務資料では「▲1,000」がマイナスを表すため、
+    増加の印に ▲ を付けると符号が逆に読まれる。
 
     色だけに意味を負わせないよう、`text` に必ず記号を含める。戻り値の `class` は
     呼び出し側（テンプレートの CSS）が色分けに使うためのフックで、ここでは色そのものは決めない。
@@ -129,12 +132,12 @@ def delta_mark(current: Any, previous: Any) -> dict:
 
     if pct is None:
         if diff > 0:
-            return {"text": "▲—", "direction": "up", "class": "is-up"}
-        return {"text": "▼—", "direction": "down", "class": "is-down"}
+            return {"text": "↑—", "direction": "up", "class": "is-up"}
+        return {"text": "↓—", "direction": "down", "class": "is-down"}
     if pct > 0:
-        return {"text": f"▲{format_percent(pct)}", "direction": "up", "class": "is-up"}
+        return {"text": f"↑+{format_percent(pct)}", "direction": "up", "class": "is-up"}
     if pct < 0:
-        return {"text": f"▼{format_percent(abs(pct))}", "direction": "down", "class": "is-down"}
+        return {"text": f"↓-{format_percent(abs(pct))}", "direction": "down", "class": "is-down"}
     return {"text": f"→{format_percent(0.0)}", "direction": "flat", "class": "is-flat"}
 
 

@@ -516,6 +516,12 @@ def _format_financials(financials: dict) -> list[str]:
     else:
         period_text = "通期（有価証券報告書）の開示なし"
     lines.append(f"- 会計基準: {standard_label} ／ {basis_label} ／ {period_text}")
+    # 「前期比」と「トレンド」は見ている期間が違う。凡例を1行置かないと
+    # 「前期比 +1.9pt、トレンド 悪化」のような行が矛盾して読める（実データで確認）
+    lines.append(
+        "- 読み方: 「前期比」は直前の1期との比較、「トレンド」は直近3期の平均的な変化方向。"
+        "この2つは食い違うことがある（直近1期は上向いたが3期では下向き、など）"
+    )
 
     metric_lines = [line for m in financials.get("metrics", []) if (line := _format_metric_line(m))]
     lines.extend(metric_lines)

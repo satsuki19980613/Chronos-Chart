@@ -168,7 +168,7 @@
     text-align: right;
     font-variant-numeric: tabular-nums;
   }
-  /* KPI の増減・トレンドは色で良し悪しを言わない（▲▼→の記号だけで方向を示す。本文色のまま） */
+  /* KPI の増減・トレンドは色で良し悪しを言わない（↑↓→の記号だけで方向を示す。本文色のまま） */
   .kpi-card .kpi-delta, .kpi-card .kpi-trend { font-size: 0.85rem; text-align: right; margin-top: 2px; }
   .kpi-card .kpi-delta.is-na, .kpi-card .kpi-trend.is-na { color: var(--muted); }
   .kpi-card .kpi-spark { margin-top: 6px; }
@@ -524,6 +524,25 @@
 {% endif %}
 
 <p class="caveat data-scope-note"><strong>分析の参照範囲:</strong> {{ report.data_scope_note }}</p>
+
+{% if verify %}
+<p class="caveat verify-note">
+  <strong>数値の実在検証:</strong>
+  {% if verify.checked == 0 %}
+  根拠等に数値・日付の引用が無かった（検証対象なし）。
+  {% elif verify.all_found %}
+  根拠等に現れた数値・日付は{{ verify.checked }}件すべて（{{ verify.rate_display }}）がプロンプトのデータに実在した。
+  {% else %}
+  根拠等に現れた数値・日付{{ verify.checked }}件のうち{{ verify.found }}件（{{ verify.rate_display }}）がプロンプトのデータに実在した。実在しなかったもの:
+  <ul class="plain-list">
+    {% for m in verify.missing %}
+    <li>{{ m.number }}（{{ m.field }}）: {{ m.text }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {{ verify.limitation_note }}
+</p>
+{% endif %}
 
 <section class="disclaimer">
   <h2>免責事項</h2>

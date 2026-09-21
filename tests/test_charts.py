@@ -121,13 +121,13 @@ class TestDeltaMark:
     def test_up(self):
         result = charts.delta_mark(112.3, 100.0)
         assert result["direction"] == "up"
-        assert result["text"].startswith("▲")
+        assert result["text"].startswith("↑")
         assert result["class"] == "is-up"
 
     def test_down(self):
         result = charts.delta_mark(90.0, 100.0)
         assert result["direction"] == "down"
-        assert result["text"].startswith("▼")
+        assert result["text"].startswith("↓")
         assert result["class"] == "is-down"
 
     def test_flat(self):
@@ -147,7 +147,7 @@ class TestDeltaMark:
     def test_previous_zero_positive_current(self):
         result = charts.delta_mark(5.0, 0.0)
         assert result["direction"] == "up"
-        assert result["text"].startswith("▲")
+        assert result["text"].startswith("↑")
 
     def test_previous_zero_negative_current(self):
         result = charts.delta_mark(-5.0, 0.0)

@@ -28,6 +28,7 @@ from .prompt import PromptInput, PromptSource, build_prompt, build_retry_prompt
 from . import report
 from .quota import Quota, apply_quota_hit
 from .schema import AnalysisReport
+from .verify import verify_numbers
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ class AnalysisResult:
     in_tokens: int  # 実際に消費した入力トークンの合計（全試行の合計）
     out_tokens: int  # 同上（candidates + thoughts）
     attempts: int  # 実際に送信した回数
+    # AI が書いた根拠の数値がプロンプトに実在するかの照合結果（SPEC §2.9.9・app.ai.verify）。
+    # 検証自体が失敗しても分析結果を失わないため、失敗時は None（成功した API 呼び出しの成果を
+    # 検証の不具合で丸ごと捨てないための設計。`render_report` 側は None なら検証ブロックを出さない）
+    verify: dict | None
 
 
 def _notify(progress: ProgressFn | None, current: int, total: int, label: str) -> None:
@@ -264,6 +269,16 @@ def run_analysis(
             prompt = build_retry_prompt(data, last_error)
             continue
         else:
+            # SPEC §2.9.9: 根拠の数値がプロンプトに実在するかを機械的に照合する。
+            # 照合に使うのは**実際に送信した** `prompt`（このループ内で再依頼のたびに更新される
+            # ローカル変数。`build_prompt` を呼び直すと再依頼後は元のプロンプトと文面が変わって
+            # しまうため、必ずこの変数を使う）。verify_numbers は純関数のはずだが、ここで例外が
+            # 出てもせっかく成功した分析結果を失わないよう、失敗は握りつぶして None にする
+            try:
+                verify_result = verify_numbers(prompt, report)
+            except Exception:
+                log.warning("AI 出力の数値検証に失敗しました（分析結果はそのまま返す）", exc_info=True)
+                verify_result = None
             return AnalysisResult(
                 report=report,
                 data=data,
@@ -271,6 +286,7 @@ def run_analysis(
                 in_tokens=counters["in_tokens"],
                 out_tokens=counters["out_tokens"],
                 attempts=counters["attempts"],
+                verify=verify_result,
             )
 
     saved_path = _save_raw_response(symbol, last_raw_text, now=now)
@@ -317,7 +333,9 @@ def ai_analyze_job(db: Any, settings: Any) -> Callable[[Any, dict], dict]:
         # まだ無いかもしれないため getattr で安全に読む（無ければ None → render_report は
         # 「財務数値は未取得です」の1行にフォールバックする）。P11-5 が入れば自動的に値が流れる
         financials = getattr(result.data, "financials", None)
-        html = report.render_report(result.data, result.report, model=result.model, financials=financials)
+        html = report.render_report(
+            result.data, result.report, model=result.model, financials=financials, verify=result.verify
+        )
         saved = report.save_report(
             db,
             config.REPORTS_DIR,
